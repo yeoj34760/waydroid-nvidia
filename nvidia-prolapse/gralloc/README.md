@@ -151,10 +151,12 @@ LINEAR exactly when `force_linear`; with an unpatched minigbm (both flags togeth
 
 #### Memory placement
 
-LINEAR buffers get the first memory type the image allows that is HOST_VISIBLE|HOST_COHERENT, or DEVICE_LOCAL
-when none is (NVIDIA's dma-buf mmap works for both). On NVK that is VRAM behind the BAR
-(DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT); on NVIDIA's own driver uncached system memory. Both are fine for the
-CPU writing and the GPU reading, and very slow for CPU reads, because the dma-buf mmap keeps the allocation's
+LINEAR write-mostly buffers prefer DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT (VRAM behind the BAR),
+then HOST_VISIBLE|HOST_COHERENT, then DEVICE_LOCAL (NVIDIA's dma-buf mmap works for both).
+Unity's Vulkan VideoPlayer requires a DEVICE_LOCAL memory type when importing decoded frames;
+uncached system memory has none, so Unity discards those frames and displays black video.
+These placements are fine for the CPU writing and the GPU reading, and very slow for CPU reads,
+because the dma-buf mmap keeps the allocation's
 caching (open-gpu-kernel-modules `nv-dmabuf.c` `nv_dma_buf_mmap`).
 
 A buffer the CPU reads often and that is not scanned out (minigbm `BO_USE_SW_READ_OFTEN` without

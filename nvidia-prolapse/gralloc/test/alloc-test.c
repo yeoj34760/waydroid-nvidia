@@ -710,6 +710,14 @@ static void test_b(uint32_t w, uint32_t h, uint32_t drm_fmt, const char *fname, 
 	}
 	PASS("LINEAR imported into the verifying VkDevice, fd memoryTypeBits 0x%x",
 	     I.mem_type_bits);
+	const VkMemoryPropertyFlags bar = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	if (!alloc_flags && find_type(&V, UINT32_MAX, bar) != UINT32_MAX)
+		EXPECT(find_type(&V, I.mem_type_bits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != UINT32_MAX,
+		       "CPU-written buffer supports DEVICE_LOCAL import (Unity video)");
+	if (alloc_flags & GBM_ALLOC_FLAG_CPU_READ_OFTEN)
+		EXPECT(find_type(&V, I.mem_type_bits, VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != UINT32_MAX,
+		       "frequently CPU-read buffer remains HOST_CACHED");
 	struct hostbuf hb;
 	hostbuf_create(&V, (VkDeviceSize)w * h * bpp, &hb);
 	gpu_read(&V, I.img, w, h, &hb);
@@ -957,15 +965,17 @@ static void test_d(void)
 			EXPECT(rss1 - rss0 < 8 * 1024, "RSS stable (%+ld kB < 8 MiB)", rss1 - rss0);
 			const long avail1 = mem_available_mib();
 			printf("  MemAvailable %ld -> %ld MiB (system-wide)\n", avail0, avail1);
-			/* sensitivity for system memory: hold 20 CPU 1080p buffers */
-			{
+			/* Frequent-read buffers use system memory; write-mostly ones prefer BAR. */
+			if (aflags_ops) {
 				int cheld[20], nc = 0;
+				alloc_flags = GBM_ALLOC_FLAG_CPU_READ_OFTEN;
 				for (; nc < 20; nc++) {
 					struct alloc_args a;
 					if (alloc_buf(w, h, DRM_FORMAT_ABGR8888, true, false, &a))
 						break;
 					cheld[nc] = a.out_fd;
 				}
+				alloc_flags = 0;
 				const long av_held = mem_available_mib();
 				for (int i = 0; i < nc; i++)
 					close(cheld[i]);

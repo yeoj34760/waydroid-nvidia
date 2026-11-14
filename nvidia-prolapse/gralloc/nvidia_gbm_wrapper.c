@@ -981,9 +981,13 @@ static int nvg_alloc_impl(struct alloc_args *args, uint32_t alloc_flags)
 					   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
 					   (cpu_read_often ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0);
 	uint32_t type = UINT32_MAX;
-	for (int pass = linear ? 0 : 1; pass < (cpu_read_often ? 1 : 2) && type == UINT32_MAX;
+	/* Unity's Vulkan VideoPlayer requires DEVICE_LOCAL for decoded frames.
+	 * Prefer CPU-visible VRAM for write-mostly buffers; keep frequent reads cached. */
+	for (int pass = linear ? (cpu_read_often ? 0 : -1) : 1;
+	     pass < (cpu_read_often ? 1 : 2) && type == UINT32_MAX;
 	     pass++) {
-		const VkMemoryPropertyFlags want = pass == 0 ? host
+		const VkMemoryPropertyFlags want = pass < 0 ? host | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+						 : pass == 0 ? host
 							      : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 		for (uint32_t i = 0; i < vk->memprops.memoryTypeCount; i++) {
 			if ((reqs.memoryTypeBits & (1u << i)) &&
