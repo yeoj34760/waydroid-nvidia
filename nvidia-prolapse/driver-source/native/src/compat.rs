@@ -568,7 +568,7 @@ mod tests {
         }
         assert_eq!(
             (present, size_only, with_range, with_wc),
-            (90, 2, 88, 57),
+            (91, 2, 89, 58),
             "update only after rerunning the exact-tag static BAR1 C oracle"
         );
     }
@@ -917,7 +917,7 @@ mod tests {
             assert_eq!(wire.bytes, [0x22, 0, 0, 0, 10, 0, 0, 0], "{version}");
             checked += 1;
         }
-        assert_eq!(checked, 225);
+        assert_eq!(checked, 226);
     }
     #[test]
     fn cpu_unmap_cookie_preserves_full_width_and_public_status_offset() {
@@ -956,7 +956,7 @@ mod tests {
             checked += 1;
         }
         assert_eq!(
-            checked, 225,
+            checked, 226,
             "update only after running the exact-tag C oracle"
         );
     }
@@ -1098,19 +1098,19 @@ mod tests {
             external += usize::from(crate::external::validate_compat(c).is_ok());
             fences += usize::from(crate::fences::validate_compat(c).is_ok());
         }
-        assert_eq!(clients, 225);
-        assert_eq!(external, 225);
-        assert_eq!(fences, 137);
+        assert_eq!(clients, 226);
+        assert_eq!(external, 226);
+        assert_eq!(fences, 138);
     }
     #[test]
     fn exact_membership_and_unknown_version_are_distinct() {
-        assert_eq!(data::VERSIONS.len(), 335);
+        assert_eq!(data::VERSIONS.len(), 336);
         assert_eq!(
             data::VERSIONS
                 .iter()
                 .filter(|(v, _)| Compat::for_version(v).unwrap().require_client_abi().is_ok())
                 .count(),
-            225
+            226
         );
         assert!(Compat::for_version("580.94.13").is_ok());
         assert!(Compat::for_version("580.94.14").is_err());
@@ -1125,12 +1125,63 @@ mod tests {
             .is_ok());
         // Published OGKM releases probed like every other tag; each must
         // resolve to its measured profile, not to a neighbour's.
-        for version in ["580.196.07", "595.44.16", "595.112.07", "615.71.10"] {
+        for version in [
+            "580.196.07",
+            "595.44.16",
+            "595.112.07",
+            "615.71.10",
+            "620.70.06",
+        ] {
             assert!(Compat::for_version(version)
                 .unwrap()
                 .require_client_abi()
                 .is_ok());
         }
+    }
+    #[test]
+    fn release_620_allocation_reserved_handles_are_zero_and_flags_relocate() {
+        let compat = Compat::for_version("620.70.06").unwrap();
+        assert!(Compat::for_version("620.70.07").is_err());
+        let group = abi::ChannelGroup {
+            vaspace: 0x12345678,
+            engine: 1,
+            flags: 0x87654321,
+            ..Default::default()
+        };
+        let wire = compat
+            .pack("NV_CHANNEL_GROUP_ALLOCATION_PARAMETERS", &group)
+            .unwrap();
+        assert_eq!(wire.len(), 32);
+        assert_eq!(&wire.bytes[8..12], &group.vaspace.to_ne_bytes());
+        assert_eq!(&wire.bytes[24..28], &[0; 4]); // new reserved2 handle
+        assert_eq!(&wire.bytes[28..32], &group.flags.to_ne_bytes());
+        let mut share = abi::ContextShare {
+            vaspace: group.vaspace,
+            flags: 1,
+            subcontext: 7,
+        };
+        let mut wire = compat
+            .pack("NV_CTXSHARE_ALLOCATION_PARAMETERS", &share)
+            .unwrap();
+        assert_eq!(wire.len(), 16);
+        assert_eq!(&wire.bytes[12..16], &[0; 4]); // new reserved handle
+        wire.bytes[8..12].copy_from_slice(&9u32.to_ne_bytes());
+        wire.unpack(&mut share).unwrap();
+        assert_eq!(share.subcontext, 9);
+        // The canonical 615 layout still uses the original payload sizes.
+        let old = Compat::for_version("615.71.09").unwrap();
+        assert_eq!(
+            old.pack("NV_CHANNEL_GROUP_ALLOCATION_PARAMETERS", &group)
+                .unwrap()
+                .len(),
+            28
+        );
+        assert_eq!(
+            old.pack("NV_CTXSHARE_ALLOCATION_PARAMETERS", &share)
+                .unwrap()
+                .len(),
+            12
+        );
     }
     #[test]
     fn every_field_fits_and_current_rust_sizes_match_census() {

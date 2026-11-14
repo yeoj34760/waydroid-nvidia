@@ -151,6 +151,8 @@
 #
 #  * /dev/nvidiactl, /dev/nvidia<N>, /dev/nvidia-modeset, and the NVIDIA render node
 #    (selected by PCI vendor 0x10de in sysfs, never by renderD number).
+#    On multi-GPU hosts, only the RM device matching that render node is bound:
+#    ANGLE and gralloc must allocate and render on the same GPU.
 #
 #  * 32-bit x86 (P6): the image's 32-bit processes (32-bit apps, ARM32 apps through houdini's x86
 #    path, mediaserver) get the same stack under vendor_extra/lib, which LineageOS 20's linker
@@ -1586,19 +1588,34 @@ def lxc_nodes(root, dev=None, existing=(), native_gl=False):
     return nodes + _device_nodes(dev, existing)
 
 
-def _device_nodes(dev, existing):
+def _device_nodes(dev, existing, sysfs="/sys/class/drm", proc_gpus=None):
     nodes = []
+    render = nvidia_render_node()
     devices = [os.path.join(dev, "nvidiactl"), os.path.join(dev, "nvidia-modeset")]
-    devices += sorted(glob.glob(os.path.join(dev, "nvidia[0-9]*")))
-    if len(devices) < 3:
+    gpus = sorted(glob.glob(os.path.join(dev, "nvidia[0-9]*")))
+    if not gpus:
         raise OSError("NVIDIA native mode: no {}/nvidia<N> device node found".format(dev))
+    if len(gpus) > 1:
+        # Gralloc uses this render node. Exposing another RM device lets ANGLE
+        # pick a different GPU, losing dma-buf support or importing foreign
+        # buffers into the wrong device. DRM and RM minor numbers are unrelated.
+        pci = os.path.basename(os.path.realpath(os.path.join(sysfs, os.path.basename(render), "device")))
+        info = os.path.join(proc_gpus or PROC_GPUS, pci, "information")
+        with open(info) as f:
+            minor = re.search(r"^Device Minor:\s*(\d+)\s*$", f.read(), re.M)
+        if not minor:
+            raise OSError("NVIDIA GPU: no 'Device Minor:' line in {}".format(info))
+        selected = os.path.join(dev, "nvidia" + minor.group(1))
+        if selected not in gpus:
+            raise OSError("NVIDIA GPU: {} for {} is missing".format(selected, render))
+        gpus = [selected]
+    devices += gpus
     for node in devices:
         if not os.path.exists(node):
             raise OSError("NVIDIA native mode: device node {} is missing (nvidia-modeset not "
                           "loaded? run nvidia-modprobe -m)".format(node))
         guest = os.path.join("dev", os.path.relpath(node, dev))
         nodes.append("lxc.mount.entry = {} {} none bind,create=file 0 0".format(node, guest))
-    render = nvidia_render_node()
     # gpu.py's entry for drm_device is 'optional', but lxc.py's add_node_entry() emits it only for
     # a node that exists, so skipping ours never leaves the node unbound.
     if not any(_binds(e, render) for e in existing):
@@ -1609,8 +1626,9 @@ def _device_nodes(dev, existing):
 # ---------------------------------------------------------------- GPU readiness (container start)
 #
 # The container start needs the GPU the generator binds: the NVIDIA DRM render node (all modes; drm_device)
-# and, for the native modes, /dev/nvidiactl, /dev/nvidia<minor> of every GPU and /dev/nvidia-modeset
-# (_device_nodes). They have two different producers, so there are two steps:
+# and, for the native modes, /dev/nvidiactl, /dev/nvidia<minor> and /dev/nvidia-modeset.
+# Readiness creates every RM node; _device_nodes binds the one matching the selected render node.
+# They have two different producers, so there are two steps:
 #  * the render node is a kernel device (nvidia-drm, drm_dev_register) that udev announces. The package's
 #    70-waydroid-nvidia-gpu.rules names the NVIDIA one (DRIVERS=="nvidia": by driver, never by node number) as the
 #    systemd device unit RENDER_DEVICE_UNIT, and the container unit's drop-in (dev/source-native

@@ -17083,10 +17083,22 @@
   {
    "path": "build/rm-abi-stability/subcontext/615.78.08/provenance.json",
    "sha256": "b2b4d0d6a11dc9149fb6278d5e77f476e21e47e6b9496f153bc53908e269fb42"
+  },
+  {
+   "path": "build/rm-abi-stability/releases/620.70.06/probe-m64.tsv",
+   "sha256": "a979903d1ffd8615ba2196f3ca834f96df9535b37375445d715447ae14bab6f3"
+  },
+  {
+   "path": "build/rm-abi-stability/releases/620.70.06/probe-m32.tsv",
+   "sha256": "a979903d1ffd8615ba2196f3ca834f96df9535b37375445d715447ae14bab6f3"
+  },
+  {
+   "path": "build/rm-abi-stability/releases/620.70.06/provenance.json",
+   "sha256": "9b68fb46e7488cd0096e92c1c5cf9952cc278851f7a9bf568f0309be0ea90f09"
   }
  ],
- "exact_tags": 335,
- "profiles": 21,
- "layouts": 91,
+ "exact_tags": 336,
+ "profiles": 22,
+ "layouts": 93,
  "authority": "Independent C public-header probes, m32/m64. No closed-core semantics inferred. No pre515 missing struct inferred."
 }

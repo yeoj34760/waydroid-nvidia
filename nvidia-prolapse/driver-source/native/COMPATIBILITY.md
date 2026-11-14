@@ -16,7 +16,39 @@ all-driver runtime promotion. Earlier rental records retain their source hashes.
 
 ## Exact ABI and capability decisions
 
-`src/compat.rs` and generated `compat_data.rs` select an exact release from independently compiled public C declarations, preserving branch backports. The union contains335 recognized versions;225 have complete client ABI evidence.110 older versions and every unknown version fail before opening a device. Of the225,137 have the fixed semaphore-fence interface used here; the other88 require a different synchronization implementation. Regenerate with `tools/generate-compat.py`; inputs/provenance stay private.
+`src/compat.rs` and generated `compat_data.rs` select an exact release from independently compiled public C declarations, preserving branch backports. The union contains336 recognized versions;226 have complete client ABI evidence.110 older versions and every unknown version fail before opening a device. Of the226,138 have the fixed semaphore-fence interface used here; the other88 require a different synchronization implementation. Regenerate with `tools/generate-compat.py`; inputs/provenance stay private.
+
+### 620.70.06 — 2026-11-13
+
+The exact [official OGKM tag](https://github.com/NVIDIA/open-gpu-kernel-modules/tree/620.70.06)
+(`e6a2e01579fbbd1ca2ed43fef2ee2589e9bd8bd9`) was independently compiled for
+x86 m32/m64: all1001 measured sizes, offsets, widths and constants agree.
+The channel-group payload grows28→32 bytes, with `reserved2` at24 and
+`internalFlags` moving24→28; context-share grows12→16 with `reserved` at12.
+The existing adapter zero-initializes these new handles and translates named
+fields; the canonical615 Rust structures remain unchanged. Unknown620 releases
+are still refused.
+
+Reproduce from a clean checkout at that tag (no historical probe archive needed):
+
+```sh
+python3 nvidia-prolapse/driver-source/native/tools/probe-release.py \
+  build/open-gpu-kernel-modules 620.70.06 build/rm-abi-stability/releases/620.70.06
+python3 nvidia-prolapse/driver-source/native/tools/generate-compat.py \
+  --extend 620.70.06 build/rm-abi-stability/releases/620.70.06
+python3 nvidia-prolapse/driver-source/native/tools/test_generate_compat.py
+```
+
+Local open620.70.06, PCI10de:2c05, GNU x86_64: CPU182 pass/44 ignored;
+hardware copy16384 words and VRAM CPU-map round trip16384 words pass.
+Five of six `mesa::hardware_tests` pass, including3000-frame slot recycling,
+511 gated batches/ring-full rollback and bounded owned-gate teardown.
+The GPU-fence two-waiter latency test fails its strict p99<1ms requirement:
+first run1.046/1.048ms, isolated repeat1.003/1.027ms. This is an unresolved
+latency gate, not an all-gates-pass claim. Clippy with `-D warnings` also fails
+on existing `chunks_exact_to_as_chunks` and `needless_range_loop` warnings in
+unchanged capture/compute/AV1 code under Rust1.99. Android runtime, full
+Waydroid rendering and deployment were not tested or changed by this addition.
 
 `src/capabilities.rs` intersects explicit known classes with the RM class list and checks the queried ISA against the supported3D/compute pair. RM ISA is not converted arithmetically to SM: GB20x0xa04/0xc00 meansSM120, GA1000x802 meansSM80, and TU116/TU1170x703 meansSM75 while preserving the real chipset identity. Copy engines are selected through the queried graphics partner list and matching per-engine class list, then allocated with version1 and the discovered engine ordinal; an absent or ambiguous partner fails explicitly. Maxwell/Pascal use pre-Volta submission; Volta and newer use a selected USERMODE class. Unknown families fail by name. Host module flavour, exact PCI/subsystem membership, platform and execution remain independent requirements; consult `build/gpu-coverage/matrix.md` from the repository root.
 

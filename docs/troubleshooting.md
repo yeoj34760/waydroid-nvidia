@@ -32,6 +32,7 @@ python3 /usr/lib/waydroid-nvidia/native/dev/driver-mode status
 | Setup stops at a failing test case | the driver does not work on this GPU or driver version | the message names a log in `/var/lib/waydroid-nvidia/gate-*`; [report it](#reporting-a-problem) and use `sudo waydroid-nvidia-setup --mode venus` meanwhile |
 | The display freezes or stutters on a monitor above about 333 Hz | Android's stock SurfaceFlinger merges vsyncs closer than 3 ms | `sudo waydroid-nvidia-setup --refresh 240` (`--refresh auto` removes the cap) |
 | Black or missing window while the desktop runs on another GPU | the compositor cannot show buffers from the NVIDIA GPU | run the Wayland desktop on the NVIDIA GPU |
+| Native mode stops after `[gbinder] Service manager ... has appeared` on a host with multiple NVIDIA GPUs | ANGLE can choose a different GPU from gralloc, dropping dma-buf support or failing EGL image imports | bind only the NVIDIA RM device matching gralloc's DRM render node; the mode generator now does this by PCI address and RM device minor, which need not have the same numbering |
 | Waydroid keeps using old images after an update | Waydroid prefers images in `/etc/waydroid-extra/images` or `/usr/share/waydroid-extra/images` | move those images away |
 | An app misbehaves only with `--native-gl on` | bug in our GL driver | report it; `--native-gl off` goes back to ANGLE |
 

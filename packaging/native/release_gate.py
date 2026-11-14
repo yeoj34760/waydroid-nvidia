@@ -527,7 +527,8 @@ def media_codecs(xml):
     return sorted(mc.get('name') for mc in ET.parse(xml).getroot().iter('MediaCodec'))
 
 
-def run(sn, native, bundle=BUNDLE, images=Path('/var/lib/waydroid/images'), log_root=LOG_ROOT, vendor_image=None):
+def run(sn, native, bundle=BUNDLE, images=Path('/var/lib/waydroid/images'), log_root=LOG_ROOT, vendor_image=None,
+        no_native_gl=None):
     """Gate the bundle on this machine. Returns (build record, gate record, media record, native_gl record,
     {staged relative path: source path}) for dev/source-native stage-release. With `vendor_image` (the
     nvidia-prolapse vendor.img about to be installed, whose prebuilts the caller verified byte-identical to
@@ -557,12 +558,13 @@ def run(sn, native, bundle=BUNDLE, images=Path('/var/lib/waydroid/images'), log_
     # nvrm is opt-in (nvidia_native_gl = on); the default GLES is ANGLE on the Vulkan path gated above. A failing
     # GL case therefore does not fail the gate: it records native_gl disabled with the case and its log as the
     # reason, nvrm is not staged, and only nvidia_native_gl = on is refused (with that reason).
-    gl_failure = None
-    try:
-        for target in ABIS:
-            gl_cases(gate, target)
-    except RuntimeError as error:
-        gl_failure = str(error)
+    gl_failure = no_native_gl
+    if not no_native_gl:
+        try:
+            for target in ABIS:
+                gl_cases(gate, target)
+        except RuntimeError as error:
+            gl_failure = str(error)
     gl_cases_run = gate.cases[len(vk_cases):]
     if vendor_image:
         media, odm = media_case_image(gate, native, vendor_img), {}
@@ -576,7 +578,7 @@ def run(sn, native, bundle=BUNDLE, images=Path('/var/lib/waydroid/images'), log_
     gl_sources = {rel: p for rel, p in sources.items() if is_gl(rel)}
     if gl_failure:                      # not staged: the egl directories then hold ANGLE only
         sources = {rel: p for rel, p in sources.items() if rel not in gl_sources}
-    exercised = gate.exercised(ABIS)
+    exercised = [rel for rel in gate.exercised(ABIS) if rel in sources]
     runner = f'packaging/native/release_gate.py (packaged gate, release {record.get("release") or record["commit"][:12]})'
     vk = {'runner': runner, 'rust_profile': 'release', 'runner_sha256': sha256(__file__), 'user': 'root',
           'started': started, 'finished': now(), 'seconds': round(time.monotonic() - t0, 1), 'exit': 0,
@@ -586,6 +588,8 @@ def run(sn, native, bundle=BUNDLE, images=Path('/var/lib/waydroid/images'), log_
     gl_files = {rel: sha256(p) for rel, p in gl_sources.items()}
     rust_sha = {}
     for target, (sub, _, abi) in ABIS.items():
+        if no_native_gl:
+            continue  # nvrm is neither exercised nor staged; ANGLE uses the gated Vulkan path
         staged = sha256(gate.payload / 'vendor_extra' / sub / 'libnv_bionic_native.so')
         linked = record['nvrm_rust_sha256'][abi]
         if linked != staged:
@@ -593,14 +597,16 @@ def run(sn, native, bundle=BUNDLE, images=Path('/var/lib/waydroid/images'), log_
                                f'payload ships {staged}; {REMEDY_BUNDLE}')
         rust_sha[abi] = linked
     gl_gate = {'runner': runner, 'runner_sha256': sha256(__file__), 'started': gl_started, 'finished': now(),
-               'exit': 1 if gl_failure else 0, 'kernel_module': kernel, 'log_dir': str(work), 'cases': gl_cases_run,
+               'exit': None if no_native_gl else (1 if gl_failure else 0),
+               'kernel_module': kernel, 'log_dir': str(work), 'cases': gl_cases_run,
                'stripped': 'llvm-strip --strip-debug (CI, collect.py)', 'rust_sha256': rust_sha}
     if gl_failure:
         failed = gl_cases_run[-1] if gl_cases_run else None
         which = (f'case {failed["case"]}, exit {failed["exit"]}; log {failed["log"]}' if failed else
                  gl_failure.splitlines()[0])
         native_gl = {'enabled': False, 'gate': gl_gate,
-                     'reason': f'the nvrm GL smoke test failed on this GPU and kernel module {kernel} ({which})'}
+                     'reason': no_native_gl or
+                     f'the nvrm GL smoke test failed on this GPU and kernel module {kernel} ({which})'}
     else:
         native_gl = {'enabled': True, 'egl': native.NVRM_EGL, 'files': gl_files,
                      'builds': record.get('nvrm_builds', {}), 'gate': gl_gate}

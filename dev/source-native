@@ -869,7 +869,7 @@ def stage(dest, rust_profile='dev', no_media=None, no_native_gl=None, nvrm_suffi
                            else f'NOT staged: {native_gl["reason"]}'))
 
 
-def stage_release(bundle, dest):
+def stage_release(bundle, dest, no_native_gl=None):
     """The packaged stage: gate the CI-built release bundle on this machine (packaging/native/release_gate.py)
     and write it to the new root `dest` with a format-3 manifest, like stage() does for build/."""
     if os.geteuid() != 0:
@@ -884,7 +884,8 @@ def stage_release(bundle, dest):
         if native._elf_class(str(path)) != (64 if '/lib64/' in rel else 32):
             raise RuntimeError(f'ANGLE {path} missing or wrong ELF class: waydroid-nvidia-setup installs the guest '
                                'prebuilts there first')
-    record, gate, media, native_gl, sources = gate_module.run(sys.modules[__name__], native, bundle)
+    record, gate, media, native_gl, sources = gate_module.run(sys.modules[__name__], native, bundle,
+                                                           no_native_gl=no_native_gl)
     sources.update(angle)
     gated = {rel: sha256(p) for rel, p in sources.items()}
     try:
@@ -1542,7 +1543,7 @@ def main():
     parser.add_argument('--active', action='store_true', help='check: also the live config (systemd ExecStartPre)')
     parser.add_argument('--dry-run', action='store_true', help='adopt: verify and report only; no gate, no write')
     parser.add_argument('--no-native-gl', metavar='REASON',
-                        help='stage: do not stage our own GLES driver nvrm even if built (reason recorded)')
+                        help='stage/stage-release: do not stage our own GLES driver nvrm (reason recorded)')
     parser.add_argument('--nvrm-suffix', default=None,
                         help='stage: NVRM_GL_DIR_SUFFIX of the nvrm build dirs (build/nvrm-android<SFX>; default: that env var)')
     parser.add_argument('--no-media', metavar='REASON',
@@ -1558,15 +1559,17 @@ def main():
         parser.error('--dry-run belongs to adopt')
     if args.no_media is not None and args.command != 'stage':
         parser.error('--no-media belongs to stage')
-    if (args.no_native_gl is not None or args.nvrm_suffix is not None) and args.command != 'stage':
-        parser.error('--no-native-gl/--nvrm-suffix belong to stage')
+    if args.no_native_gl is not None and args.command not in ('stage', 'stage-release'):
+        parser.error('--no-native-gl belongs to stage/stage-release')
+    if args.nvrm_suffix is not None and args.command != 'stage':
+        parser.error('--nvrm-suffix belongs to stage')
     if (args.dest is not None) != (args.command == 'stage-release'):
         parser.error('stage-release takes BUNDLE DEST; other commands take one path')
     if args.command == 'stage-release':
         dest = args.dest.resolve()
         if any(c.isspace() for c in str(dest)):
             parser.error('LXC/systemd deployment paths must not contain whitespace')
-        stage_release(args.root.resolve(), dest)
+        stage_release(args.root.resolve(), dest, args.no_native_gl)
         return 0
     if args.command in ('hook', 'install-hook'):
         if args.root:

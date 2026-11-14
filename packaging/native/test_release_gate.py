@@ -246,7 +246,7 @@ def test_media_gate_failures_still_fail(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- nvrm (opt-in GL) failing its smoke test
 
-def fake_run(tmp_path, monkeypatch, gl_fails):
+def fake_run(tmp_path, monkeypatch, gl_fails, no_native_gl=None):
     """run() with the cases scripted: Vulkan passes, the nvrm GL cases pass or the first one fails."""
     import types
     files = {'payload/vendor_extra/lib64/libnv_bionic_native.so': b'rust64',
@@ -260,6 +260,8 @@ def fake_run(tmp_path, monkeypatch, gl_fails):
     record = {'format': 2, 'commit': '0' * 40, 'files': {rel: hashlib.sha256(d).hexdigest() for rel, d in files.items()},
               'nvrm_rust_sha256': {'x86_64': hashlib.sha256(b'rust64').hexdigest(),
                                    'x86': hashlib.sha256(b'rust32').hexdigest()}}
+    if no_native_gl:
+        record['nvrm_rust_sha256'] = {'x86_64': 'old-backend', 'x86': 'old-backend'}
     (b / gate.RECORD).write_text(json.dumps(record))
     images = tmp_path / 'images'
     images.mkdir()
@@ -274,7 +276,7 @@ def fake_run(tmp_path, monkeypatch, gl_fails):
             return {}
 
         def exercised(self, targets):
-            return ['vendor_extra/lib64/hw/vulkan.nvidia.so']
+            return ['vendor_extra/lib64/hw/vulkan.nvidia.so', 'vendor/lib64/egl/libEGL_nvrm.so']
 
     def vulkan(g, target, expect):
         assert expect == 'nvidia-prolapse'      # the packaged gate checks the default mode's driver
@@ -292,7 +294,20 @@ def fake_run(tmp_path, monkeypatch, gl_fails):
     monkeypatch.setattr(gate, 'media_case_image', lambda g, n, img: {'hardware_decode': True})
     native = types.SimpleNamespace(driver_version=lambda: '580.105.08', NVRM_EGL='nvrm',
                                    NVRM_EGL_LIBS=('libEGL_nvrm.so',), NVRM_GALLIUM='libgallium_dri_nvrm.so')
-    return gate.run(None, native, b, images=images, log_root=tmp_path / 'logs', vendor_image=images / 'vendor.img')
+    return gate.run(None, native, b, images=images, log_root=tmp_path / 'logs', vendor_image=images / 'vendor.img',
+                    no_native_gl=no_native_gl)
+
+
+def test_explicit_native_gl_opt_out_still_gates_vulkan_and_media(tmp_path, monkeypatch):
+    reason = 'Backend-only upgrade; keep ANGLE on the tested Vulkan driver'
+    _, vk, media, native_gl, sources = fake_run(tmp_path, monkeypatch, gl_fails=True, no_native_gl=reason)
+    assert [c['case'] for c in vk['cases']] == ['android/vk', 'android32/vk'] and vk['exit'] == 0
+    assert media['hardware_decode'] is True
+    assert native_gl['enabled'] is False and native_gl['reason'] == reason
+    assert native_gl['gate']['exit'] is None and native_gl['gate']['cases'] == []
+    assert set(vk['exercised']) <= set(sources)
+    assert not any('nvrm' in rel for rel in sources)
+    assert 'vendor_extra/lib64/hw/vulkan.nvidia.so' in sources
 
 
 def test_nvrm_passing_is_enabled_and_staged(tmp_path, monkeypatch):

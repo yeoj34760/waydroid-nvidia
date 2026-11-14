@@ -722,6 +722,23 @@ class GpuReadyTest(unittest.TestCase):
             self.node(name)
         self.assertEqual(self.ready(run=lambda *a, **k: self.fail("nvidia-modprobe ran")), [])
 
+    def test_multi_gpu_binds_only_rm_device_matching_gralloc_render_node(self):
+        for name in ("nvidiactl", "nvidia0", "nvidia1", "nvidia-modeset"):
+            self.node(name)
+        self.gpus(1)
+        sysfs = os.path.join(self._tmp.name, "drm")
+        path = os.path.join(sysfs, "renderD129")
+        os.makedirs(path)
+        os.symlink("/devices/0000:01:00.0", os.path.join(path, "device"))
+        got = nn._device_nodes(self.dev, [], sysfs=sysfs, proc_gpus=self.proc)
+        self.assertTrue(any(self.dev + "/nvidia1 " in entry for entry in got))
+        self.assertFalse(any(self.dev + "/nvidia0 " in entry for entry in got))
+        self.assertEqual(len(got), 4)
+        # Fail before starting the container if the PCI-to-RM mapping is absent.
+        os.unlink(os.path.join(self.proc, "0000:01:00.0", "information"))
+        with self.assertRaises(OSError):
+            nn._device_nodes(self.dev, [], sysfs=sysfs, proc_gpus=self.proc)
+
     def test_every_gpu_minor(self):
         self.gpus(0, 1)
         for name in ("nvidiactl", "nvidia0", "nvidia-modeset"):
