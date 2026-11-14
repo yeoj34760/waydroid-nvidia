@@ -27,7 +27,7 @@ java -jar "$SIGNER" sign --ks "$OUT/overlay.jks" --ks-pass pass:android \
     --key-pass pass:android --v4-signing-enabled false --out "$OUT/WaydroidSSD.apk" "$OUT/unsigned.apk"
 java -jar "$SIGNER" verify "$OUT/WaydroidSSD.apk"
 mkdir -p "$OUT/classes" "$OUT/dex"
-javac --release 8 -d "$OUT/classes" "$HERE/src/dev/waydroid/ssd/TaskResize.java"
+javac --release 8 -d "$OUT/classes" "$HERE"/src/dev/waydroid/ssd/*.java
 jar cf "$OUT/task-classes.jar" -C "$OUT/classes" .
 java -cp "$TOOLS/lib/d8.jar" com.android.tools.r8.D8 --min-api 33 \
     --output "$OUT/dex" "$OUT/task-classes.jar"

@@ -212,6 +212,8 @@ jobs:
         run: python3 hwcomposer/test_background_opacity.py "$HOME/hwc-work/tree"
       - name: Check decorated freeform task geometry
         run: python3 hwcomposer/test_task_geometry.py "$HOME/hwc-work/tree"
+      - name: Check single-window logical display resize
+        run: python3 hwcomposer/test_display_resize.py "$HOME/hwc-work/tree"
       - uses: actions/upload-artifact@v4
         with:
           name: guest-hwcomposer

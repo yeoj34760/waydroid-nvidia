@@ -34,6 +34,7 @@ struct wp_viewport {};
 struct xdg_surface {};
 struct display {
     bool wantDecorations = true;
+    bool resizeFollowsWindow = false, resizeUsesReconnect = false;
     std::atomic<bool> multiWindows{true};
     double scale = 2, output_scale = 2;
     int present_x = 0, present_y = 0;
@@ -81,6 +82,7 @@ struct split_layer_names_helper {
     info &operator[](size_t i) { return values.at(i); }
     void setup(waydroid_hwc_composer_device_1 *, hwc_layer_1 *, size_t) {}
 };
+void display_resize_arm(display *, int, int) {}
 struct multi_window_mode {
     split_layer_names_helper layer_infos;
     std::map<std::string, hwc_rect_t> content_frames;

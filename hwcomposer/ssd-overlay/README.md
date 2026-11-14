@@ -69,3 +69,15 @@ shadow padding; newly created app windows pick it up. See
 [PhoneWindow](https://github.com/LineageOS/android_frameworks_base/blob/lineage-20.0/core/java/com/android/internal/policy/PhoneWindow.java).
 GNOME's Mutter does not provide this
 SSD protocol, so keep the Android caption there.
+
+With hwcomposer patch 0023, this JAR also enables automatic logical display resizing
+when `persist.waydroid.multi_windows=false` and native decorations are enabled.
+The window's client size at the output scale becomes Android's logical resolution
+after a 250 ms settle delay (`persist.waydroid.resize_settle_ms`). Stock composer
+HALs retain their physical mode: WindowManager applies the override, and hwcomposer
+removes its projection's black bars without stretching app pixels. `wm size`
+shows the resulting override. The helper calls `IWindowManager.setForcedDisplaySize`
+as the system UID; it needs no shell/root privilege. Multi-window mode clears that
+override and continues resizing individual tasks. Rebuild and reinstall the JAR
+when upgrading from patch 0022. If removing the helper, first reset an outstanding
+override with `sudo waydroid shell -- wm size reset`.
