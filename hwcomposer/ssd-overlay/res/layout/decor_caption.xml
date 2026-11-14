@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Keep the framework's expected views, but give the caption and every hit target
+     zero size. Visibility alone is insufficient: DecorCaptionView resets it. -->
+<com.android.internal.widget.DecorCaptionView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent">
+    <LinearLayout android:id="@*android:id/caption"
+        android:layout_width="match_parent" android:layout_height="0dp"
+        android:background="@android:color/transparent"
+        android:focusable="false" android:descendantFocusability="blocksDescendants">
+        <View android:id="@*android:id/back_window"
+            android:layout_width="0dp" android:layout_height="0dp" />
+        <View android:id="@*android:id/pip_window"
+            android:layout_width="0dp" android:layout_height="0dp" />
+        <View android:id="@*android:id/minimize_window"
+            android:layout_width="0dp" android:layout_height="0dp" />
+        <View android:id="@*android:id/maximize_window"
+            android:layout_width="0dp" android:layout_height="0dp" />
+        <View android:id="@*android:id/close_window"
+            android:layout_width="0dp" android:layout_height="0dp" />
+    </LinearLayout>
+</com.android.internal.widget.DecorCaptionView>

@@ -1,0 +1,453 @@
+From a85ab74bf415502eaa19ef4054a9281564f91c7b Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 14 Nov 2026 13:59:29 +0900
+Subject: [PATCH] hwcomposer: give decorated freeform tasks their own window
+ geometry
+
+Collect task layer bounds, use task-local subsurface positions and fit the
+native parent to the task instead of framing the whole Android display.
+Keep each task at the output scale; a per-app configure must not reshape
+the shared display or affect other apps.
+
+Remember native client dimensions separately from Android buffer bounds,
+so arriving frames cannot undo a host resize. Fit old buffers uniformly
+while Android relays out the task, and apply the inverse viewport mapping
+to pointer, touch and tablet input. Android client-side shadow insets must
+be disabled with render_shadows_in_compositor=1 when using SSD.
+
+Coalesce host configures for 100 ms on a per-window worker, then resize only
+that task through app_process and ActivityTaskManager.resizeTask.
+Binder shellCommand rejects the composer's system UID, so the optional SSD
+Java helper calls the task API directly instead. This also handles maximize and
+tiling, without requiring a final non-resizing configure or feeding our own
+geometry updates back into another task resize. Reap commands off-thread;
+window destruction never waits for WindowManager.
+
+Original work for waydroid-nvidia; modifies Apache-2.0 hwcomposer sources.
+---
+ hwcomposer/hwcomposer.cpp         |  52 +++++----
+ hwcomposer/modes/multi-window.cpp |  23 ++++
+ hwcomposer/modes/multi-window.h   |   1 +
+ hwcomposer/wayland-hwc.cpp        | 171 +++++++++++++++++++++++++-----
+ hwcomposer/wayland-hwc.h          |  16 +++
+ 5 files changed, 219 insertions(+), 44 deletions(-)
+
+diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
+index 73e955d..b91e942 100644
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -421,7 +421,8 @@ static void apply_surface_damage(hwc_layer_1 *hwc_layer, surface_context &surfac
+     });
+ }
+ 
+-static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pdev, hwc_layer_1 *hwc_layer, size_t hwc_layer_index, surface_context &surface_context, buffer *buf = nullptr) {
++static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pdev, hwc_layer_1 *hwc_layer, size_t hwc_layer_index, surface_context &surface_context, buffer *buf = nullptr,
++                                              const hwc_rect_t *destination = nullptr) {
+     /* How long a layer's acquire fence may take before the frame is presented anyway. */
+     constexpr int acquireTimeoutMS = 1000;
+     int res = -1;
+@@ -476,8 +477,10 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+             /* finite surface-local rect: INT32_MAX regions overflow region
+              * math in some compositors and get silently dropped */
+             wl_region_add(opaque, 0, 0,
+-                          (int32_t)ceil((hwc_layer->displayFrame.right - hwc_layer->displayFrame.left) / pdev->display->scale),
+-                          (int32_t)ceil((hwc_layer->displayFrame.bottom - hwc_layer->displayFrame.top) / pdev->display->scale));
++                          destination ? destination->right - destination->left :
++                              (int32_t)ceil((hwc_layer->displayFrame.right - hwc_layer->displayFrame.left) / pdev->display->scale),
++                          destination ? destination->bottom - destination->top :
++                              (int32_t)ceil((hwc_layer->displayFrame.bottom - hwc_layer->displayFrame.top) / pdev->display->scale));
+         }
+         wl_surface_set_opaque_region(surface_context.surface, opaque);
+         if (opaque)
+@@ -491,7 +494,12 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+             std::swap(bound_w, bound_h);
+         surface_context.set_crop(rect_apply_transform(hwc_layer->sourceCropf, hwc_layer->transform),
+                                  bound_w, bound_h);
+-        surface_context.set_display_frame(hwc_layer->displayFrame, pdev->display->scale);
++        if (destination)
++            wp_viewport_set_destination(surface_context.viewport,
++                std::max(1, destination->right - destination->left),
++                std::max(1, destination->bottom - destination->top));
++        else
++            surface_context.set_display_frame(hwc_layer->displayFrame, pdev->display->scale);
+     } else {
+         surface_context.set_buffer_scale(pdev->display->scale);
+     }
+@@ -520,28 +528,34 @@ int apply_hwc_layer_to_window(waydroid_hwc_composer_device_1 *pdev, hwc_layer_1
+ 
+     auto &window_layer = window->get_next_layer();
+ 
+-    if (apply_hwc_layer_to_surface_context(pdev, hwc_layer, hwc_layer_index, window_layer, buf) != 0) {
++    const bool task_geometry = window->uses_task_geometry();
++    hwc_rect_t destination;
++    if (task_geometry) {
++        destination = window->task_layer_frame(hwc_layer->displayFrame);
++    } else {
++        destination.left = pdev->display->present_x + floor(hwc_layer->displayFrame.left / pdev->display->scale);
++        destination.top = pdev->display->present_y + floor(hwc_layer->displayFrame.top / pdev->display->scale);
++        destination.right = destination.left + ceil((hwc_layer->displayFrame.right - hwc_layer->displayFrame.left) / pdev->display->scale);
++        destination.bottom = destination.top + ceil((hwc_layer->displayFrame.bottom - hwc_layer->displayFrame.top) / pdev->display->scale);
++    }
++    const int width = std::max(1, destination.right - destination.left);
++    const int height = std::max(1, destination.bottom - destination.top);
++    if (apply_hwc_layer_to_surface_context(pdev, hwc_layer, hwc_layer_index, window_layer, buf,
++                                          task_geometry ? &destination : nullptr) != 0)
+         return -1;
+-    }
+-
+-    /* present_x/y centres the fitted guest display inside a window of any
+-     * shape; it is 0 unless the window aspect differs from the guest's. */
+-    window_layer.set_position(
+-        pdev->display->present_x + floor(hwc_layer->displayFrame.left / pdev->display->scale),
+-        pdev->display->present_y + floor(hwc_layer->displayFrame.top / pdev->display->scale)
+-    );
++    window_layer.set_position(destination.left, destination.top);
+ 
+     if (window->input_region) {
+-        wl_region_add(window->input_region,
+-                      pdev->display->present_x - WINDOW_DECORATION_OUTSET + floor(hwc_layer->displayFrame.left / pdev->display->scale),
+-                      pdev->display->present_y - WINDOW_DECORATION_OUTSET + floor(hwc_layer->displayFrame.top / pdev->display->scale),
+-                      2*WINDOW_DECORATION_OUTSET + ceil((hwc_layer->displayFrame.right - hwc_layer->displayFrame.left) / pdev->display->scale),
+-                      2*WINDOW_DECORATION_OUTSET + ceil((hwc_layer->displayFrame.bottom - hwc_layer->displayFrame.top) / pdev->display->scale));
++        const int outset = task_geometry ? 0 : WINDOW_DECORATION_OUTSET;
++        wl_region_add(window->input_region, destination.left - outset, destination.top - outset,
++                      width + 2*outset, height + 2*outset);
+     }
+ 
+     pdev->display->layers[window_layer.surface] = {
+             .x = hwc_layer->displayFrame.left,
+-            .y = hwc_layer->displayFrame.top };
++            .y = hwc_layer->displayFrame.top,
++            .scale_x = task_geometry ? (double)(hwc_layer->displayFrame.right - hwc_layer->displayFrame.left) / width : 0,
++            .scale_y = task_geometry ? (double)(hwc_layer->displayFrame.bottom - hwc_layer->displayFrame.top) / height : 0 };
+ 
+     if (window->display->presentation) {
+         auto feedback = wp_presentation_feedback(window->display->presentation, window_layer.surface);
+diff --git a/hwcomposer/modes/multi-window.cpp b/hwcomposer/modes/multi-window.cpp
+index bfc251a..a9984d8 100644
+--- a/hwcomposer/modes/multi-window.cpp
++++ b/hwcomposer/modes/multi-window.cpp
+@@ -70,6 +70,26 @@ int multi_window_mode::prepare(hwc_layer_1* hwc_layer, size_t) {
+ 
+ int multi_window_mode::setup_set(waydroid_hwc_composer_device_1* pdev, hwc_display_contents_1_t* contents) {
+     layer_infos.setup(pdev, contents->hwLayers, contents->numHwLayers);
++    if (pdev->display->wantDecorations) {
++        /* Freeform windows use the output scale, independently of the last full UI window. */
++        pdev->display->scale = pdev->display->output_scale;
++        pdev->display->present_x = pdev->display->present_y = 0;
++        for (size_t i = 0; i < contents->numHwLayers; ++i) {
++            const auto &layer = contents->hwLayers[i];
++            if (!can_handle_layer(layer) || !layer.handle || (layer.flags & HWC_IS_CURSOR_LAYER)
++                || layer_infos[i].type != LayerSplitType::TID)
++                continue;
++            const auto &frame = layer.displayFrame;
++            if (frame.right <= frame.left || frame.bottom <= frame.top)
++                continue;
++            auto result = content_frames.emplace(layer_infos[i].tid, frame);
++            auto &bounds = result.first->second;
++            bounds.left = std::min(bounds.left, frame.left);
++            bounds.top = std::min(bounds.top, frame.top);
++            bounds.right = std::max(bounds.right, frame.right);
++            bounds.bottom = std::max(bounds.bottom, frame.bottom);
++        }
++    }
+     return 0;
+ }
+ 
+@@ -109,6 +129,9 @@ int multi_window_mode::handle_layer(waydroid_hwc_composer_device_1* pdev, hwc_la
+     window *window = get_window(pdev, layer_infos[i]);
+ 
+     if (window) {
++        auto frame = content_frames.find(layer_infos[i].tid);
++        if (window->uses_task_geometry() && window->lastLayer == 0 && frame != content_frames.end())
++            window->set_content_frame(frame->second);
+         return apply_hwc_layer_to_window(pdev, hwc_layer, i, window);
+     } else {
+         if (hwc_layer->acquireFenceFd != -1) {
+diff --git a/hwcomposer/modes/multi-window.h b/hwcomposer/modes/multi-window.h
+index e5afee6..aa5ca6c 100644
+--- a/hwcomposer/modes/multi-window.h
++++ b/hwcomposer/modes/multi-window.h
+@@ -29,6 +29,7 @@
+ 
+ class multi_window_mode : public waydroid_mode {
+     split_layer_names_helper layer_infos;
++    std::map<std::string, hwc_rect_t> content_frames;
+ 
+     static window *get_window(waydroid_hwc_composer_device_1 *pdev, layer_info &layer_info);
+     static bool can_handle_layer(const hwc_layer_1& layer);
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index b035700..6550174 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -142,7 +142,7 @@ refit_windows_to_display(struct waydroid_hwc_composer_device_1 *pdev)
+     std::scoped_lock lock(display->windowsMutex);
+     for (auto &entry : display->windows) {
+         struct window *w = entry.second.get();
+-        if (!w)
++        if (!w || w->uses_task_geometry())
+             continue;
+         if (display->wm_base && w->xdg_surface)
+             xdg_surface_set_window_geometry(w->xdg_surface, 0, 0,
+@@ -610,6 +610,14 @@ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
+ 		return;
+ 	}
+ 
++    /* A decorated freeform task owns its window, not the Android display.
++     * Never let its configure change the shared scale or display mode. */
++    if (window->uses_task_geometry() && display->height && display->width) {
++        window->configure_task(width, height);
++        request_refresh(display);
++        return;
++    }
++
+     display->req_width = width;
+     display->req_height = height;
+ 
+@@ -671,6 +679,12 @@ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
+     }
+ }
+ 
++static void transform_input_coordinates(struct display *display, wl_surface *surface, int &x, int &y) {
++    const auto &frame = display->layers[surface];
++    x = int(x * (frame.scale_x > 0 ? frame.scale_x : display->scale)) + frame.x;
++    y = int(y * (frame.scale_y > 0 ? frame.scale_y : display->scale)) + frame.y;
++}
++
+ static void
+ send_key_event(display *data, uint32_t key, wl_keyboard_key_state state);
+ 
+@@ -859,6 +873,132 @@ void surface_context::set_display_frame(hwc_rect_t rect, double scale) {
+                                 std::max(1, height));
+ }
+ 
++bool window::uses_task_geometry() const {
++    return display->wantDecorations && display->multiWindows.load(std::memory_order_relaxed)
++        && taskID != "0" && taskID != "none";
++}
++
++void window::set_content_frame(hwc_rect_t frame) {
++    std::scoped_lock lock(content_mutex);
++    content_frame = frame;
++    /* Only the first frame chooses the native size. Subsequent Android frames
++     * must not overwrite the size chosen by the compositor during a resize. */
++    if (!host_width || !host_height) {
++        host_width = std::max(1, (int)ceil((frame.right - frame.left) / display->scale));
++        host_height = std::max(1, (int)ceil((frame.bottom - frame.top) / display->scale));
++    }
++    if (xdg_surface)
++        xdg_surface_set_window_geometry(xdg_surface, 0, 0, host_width, host_height);
++    if (dedicated_background_surface && viewport)
++        wp_viewport_set_destination(viewport, host_width, host_height);
++    const double scale = std::min((double)host_width / (frame.right - frame.left),
++                                  (double)host_height / (frame.bottom - frame.top));
++    const double offset_x = (host_width - (frame.right - frame.left) * scale) / 2;
++    const double offset_y = (host_height - (frame.bottom - frame.top) * scale) / 2;
++    display->layers[surface] = { .x = frame.left - (int)lround(offset_x / scale),
++        .y = frame.top - (int)lround(offset_y / scale), .scale_x = 1 / scale, .scale_y = 1 / scale };
++}
++
++hwc_rect_t window::task_layer_frame(hwc_rect_t frame) {
++    std::scoped_lock lock(content_mutex);
++    /* Fit old buffers uniformly until Android has relaid out the task. */
++    const double scale = std::min((double)host_width / (content_frame.right - content_frame.left),
++                                  (double)host_height / (content_frame.bottom - content_frame.top));
++    const double x = (host_width - (content_frame.right - content_frame.left) * scale) / 2;
++    const double y = (host_height - (content_frame.bottom - content_frame.top) * scale) / 2;
++    return { (int)floor(x + (frame.left - content_frame.left) * scale),
++             (int)floor(y + (frame.top - content_frame.top) * scale),
++             (int)ceil(x + (frame.right - content_frame.left) * scale),
++             (int)ceil(y + (frame.bottom - content_frame.top) * scale) };
++}
++
++void window::configure_task(int width, int height) {
++    std::scoped_lock lock(content_mutex);
++    if (!host_width || !host_height || (host_width == width && host_height == height))
++        return;
++    host_width = width;
++    host_height = height;
++    task_resize_pending = true;
++    task_resize_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
++    if (!task_resize_thread.joinable()) {
++        task_resize_thread = std::thread([this]() {
++            std::unique_lock<std::mutex> lock(content_mutex);
++            while (!task_resize_quit) {
++                if (!task_resize_pending) {
++                    task_resize_cond.wait(lock);
++                    continue;
++                }
++                const auto deadline = task_resize_deadline;
++                task_resize_cond.wait_until(lock, deadline);
++                if (task_resize_quit)
++                    break;
++                if (std::chrono::steady_clock::now() < task_resize_deadline)
++                    continue;
++                const int width = host_width, height = host_height;
++                task_resize_pending = false;
++                lock.unlock();
++                resize_task(width, height);
++                lock.lock();
++            }
++        });
++    }
++    task_resize_cond.notify_one();
++}
++
++void window::stop_task_resize() {
++    {
++        std::scoped_lock lock(content_mutex);
++        task_resize_quit = true;
++        task_resize_cond.notify_one();
++    }
++    if (task_resize_thread.joinable())
++        task_resize_thread.join();
++}
++
++void window::resize_task(int width, int height) {
++    std::scoped_lock lock(content_mutex);
++    /* The initial configure precedes the first task layer. Let that layer size
++     * the window; otherwise the compositor's default enlarges every new task. */
++    if (content_frame.right <= content_frame.left || content_frame.bottom <= content_frame.top)
++        return;
++    if (width == (int)ceil((content_frame.right - content_frame.left) / display->scale)
++        && height == (int)ceil((content_frame.bottom - content_frame.top) / display->scale))
++        return;
++    const int w = std::max(1, (int)lround(width * display->scale));
++    const int h = std::max(1, (int)lround(height * display->scale));
++    /* Keep a resized task on the fixed Android display. Moving its host window
++     * does not move the task; input is translated back to this guest origin. */
++    const int left = std::max(0, std::min(content_frame.left, display->phys_width - w));
++    const int top = std::max(0, std::min(content_frame.top, display->phys_height - h));
++    std::string l = std::to_string(left), t = std::to_string(top);
++    std::string r = std::to_string(left + w), b = std::to_string(top + h);
++    if (access("/system/framework/waydroid-ssd.jar", R_OK) != 0) {
++        ALOGE("SSD task resize helper missing: install /system/framework/waydroid-ssd.jar");
++        return;
++    }
++    /* Binder shellCommand rejects the composer's system UID. app_process calls
++     * ActivityTaskManager.resizeTask directly under that UID instead. */
++    char *const argv[] = {(char *)"env", (char *)"CLASSPATH=/system/framework/waydroid-ssd.jar",
++        (char *)"/system/bin/app_process", (char *)"/system/bin", (char *)"dev.waydroid.ssd.TaskResize",
++        (char *)taskID.c_str(), (char *)l.c_str(), (char *)t.c_str(),
++        (char *)r.c_str(), (char *)b.c_str(), nullptr};
++    extern char **environ;
++    pid_t pid;
++    int err = posix_spawn(&pid, "/system/bin/env", nullptr, nullptr, argv, environ);
++    if (err) {
++        ALOGE("could not resize task %s: %s", taskID.c_str(), strerror(err));
++        return;
++    }
++    ALOGI("resize task %s -> %d,%d %dx%d", taskID.c_str(), left, top, w, h);
++    /* No WindowManager wait in either the Wayland thread or window destructor. */
++    std::thread([pid]() {
++        int status = 0;
++        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
++        if (!WIFEXITED(status) || WEXITSTATUS(status))
++            ALOGE("task resize command failed (status %d)", status);
++    }).detach();
++}
++
+ void window::update_background_geometry() {
+     wp_viewport_set_destination(viewport, display->width, display->height);
+     struct wl_region *opaque = wl_compositor_create_region(display->compositor);
+@@ -927,6 +1067,7 @@ void window::minimize() {
+ }
+ 
+ window::~window() {
++    stop_task_resize();
+     if (decoration)
+         zxdg_toplevel_decoration_v1_destroy(decoration);
+     if (xdg_toplevel)
+@@ -1493,12 +1634,7 @@ pointer_handle_motion(void *data, struct wl_pointer *,
+     }
+     x = wl_fixed_to_int(sx);
+     y = wl_fixed_to_int(sy);
+-    if (display->scale != 1) {
+-        x = int(x * display->scale);
+-        y = int(y * display->scale);
+-    }
+-    x += display->layers[display->pointer_surface].x;
+-    y += display->layers[display->pointer_surface].y;
++    transform_input_coordinates(display, display->pointer_surface, x, y);
+ 
+     ADD_EVENT(EV_ABS, ABS_X, x);
+     ADD_EVENT(EV_ABS, ABS_Y, y);
+@@ -1734,12 +1870,7 @@ touch_handle_down(void *data, struct wl_touch *,
+     }
+     x = wl_fixed_to_int(x_w);
+     y = wl_fixed_to_int(y_w);
+-    if (display->scale != 1) {
+-        x = int(x * display->scale);
+-        y = int(y * display->scale);
+-    }
+-    x += display->layers[surface].x;
+-    y += display->layers[surface].y;
++    transform_input_coordinates(display, surface, x, y);
+ 
+     ADD_EVENT(EV_ABS, ABS_MT_SLOT, touch_id);
+     ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, touch_id);
+@@ -1807,12 +1938,7 @@ touch_handle_motion(void *data, struct wl_touch *,
+         }
+         x = wl_fixed_to_int(x_w);
+         y = wl_fixed_to_int(y_w);
+-        if (display->scale != 1) {
+-            x = int(x * display->scale);
+-            y = int(y * display->scale);
+-        }
+-        x += display->layers[display->touch_surfaces[id]].x;
+-        y += display->layers[display->touch_surfaces[id]].y;
++        transform_input_coordinates(display, display->touch_surfaces[id], x, y);
+ 
+         ADD_EVENT(EV_ABS, ABS_MT_SLOT, touch_id);
+         ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, touch_id);
+@@ -2460,12 +2586,7 @@ tablet_tool_motion(void *data, struct zwp_tablet_tool_v2 *,
+         }
+         x = wl_fixed_to_int(x_w);
+         y = wl_fixed_to_int(y_w);
+-        if (display->scale != 1) {
+-            x = int(x * display->scale);
+-            y = int(y * display->scale);
+-        }
+-        x += display->layers[display->tablet_surface].x;
+-        y += display->layers[display->tablet_surface].y;
++        transform_input_coordinates(display, display->tablet_surface, x, y);
+ 
+         ADD_EVENT(EV_ABS, ABS_X, x);
+         ADD_EVENT(EV_ABS, ABS_Y, y);
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 32b9507..23e9e16 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -100,6 +100,8 @@ enum class GrallocType {
+ struct layerFrame {
+     int x;
+     int y;
++    double scale_x = 0;
++    double scale_y = 0;
+ };
+ 
+ struct handleExt {
+@@ -221,6 +223,20 @@ struct window {
+     /* Used for the background color */
+     bool dedicated_background_surface;
+     bool background_opaque;
++    /* Android-space bounds of this task; the HWC thread writes, configure reads. */
++    std::mutex content_mutex;
++    hwc_rect_t content_frame {};
++    int host_width = 0, host_height = 0;
++    std::thread task_resize_thread;
++    std::condition_variable task_resize_cond;
++    bool task_resize_quit = false, task_resize_pending = false;
++    std::chrono::steady_clock::time_point task_resize_deadline;
++    bool uses_task_geometry() const;
++    void set_content_frame(hwc_rect_t frame);
++    void resize_task(int width, int height);
++    void configure_task(int width, int height);
++    void stop_task_resize();
++    hwc_rect_t task_layer_frame(hwc_rect_t frame);
+     struct wl_surface *surface;
+     struct wp_viewport *viewport;
+     struct wl_buffer *bg_buffer;
+-- 
+2.56.1
+

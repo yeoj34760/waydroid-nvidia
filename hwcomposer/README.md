@@ -42,6 +42,10 @@ types that libui's headers include). `provision.sh`/`build.sh` are adapted from 
 
 ## Patches
 
+For desktop title bars in multi-window mode, see the optional
+[SSD resource overlay](ssd-overlay/README.md). It hides Android's caption when
+the existing `persist.waydroid.window_decorations` SSD option is enabled.
+
 | # | What | Source |
 |---|---|---|
 | 0001 | Baseline WIP + issue #5 (decorations, resize as scaled view + display-mode ladder, clipboard, window-lifetime fix) | waydroid-nvidia (2026-07-28) |
@@ -65,10 +69,13 @@ types that libui's headers include). `provision.sh`/`build.sh` are adapted from 
 | 0019 | a failed EGL read-back of a wl_shm copy (the mouse pointer, layers the compositor cannot import, inactive-window snapshots) is logged with the failing step, the EGL/GL error and the buffer, rate-limited, instead of leaving the zeroed (transparent) memfd on screen without a word | ours |
 | 0020 | window creation never waits for the Wayland thread: the new window's role objects are made on the creation queue and dispatched by the composer thread that waits for their first configure (inside presentDisplay, holding the HWC2On1Adapter state mutex and windowsMutex), then handed to the default queue under a read intent. Before, the Wayland thread dispatched that configure while it could itself block on those locks (refresh nudge, input handlers): a lock cycle that wedged the display stack until the watchdog killed system_server | ours |
 | 0021 | preserve each parent's background opacity during xdg configure and display refit: multi-window app/IME parents stay transparent, so the compositor redraws the desktop and other windows behind them instead of leaving corrupt pixels outside the app | ours |
+| 0022 | decorated freeform apps get task-sized parents and local subsurface positions; keep native dimensions separate from Android buffer bounds, fit pending buffers uniformly and invert their viewport for input. Coalesce host resizes/maximize/tiling for 100 ms before resizing only the task; arriving Android frames cannot undo a native resize | ours |
 
 After building, `python3 hwcomposer/test_background_opacity.py build/hwcomposer-work/tree`
 checks both resize paths with transparent and opaque backgrounds using the patched C++ code
 and a host compiler. No Android runtime is needed; this does not replace a live compositor check.
+`python3 hwcomposer/test_task_geometry.py build/hwcomposer-work/tree` checks task
+bounds, native window dimensions, local layer placement and configure feedback.
 
 Each patch header states what, why, source URL and author, licence and deviations. Not taken:
 quinovax's multi-window and input hunks (content-frame origins, `prepare_layer_geom` co-clipping,
