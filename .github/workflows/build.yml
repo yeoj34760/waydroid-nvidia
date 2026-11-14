@@ -208,6 +208,8 @@ jobs:
           cat hwc-out/PATCHES
           mkdir -p stage/vendor/lib64/hw
           cp hwc-out/hwcomposer.waydroid.stripped.so stage/vendor/lib64/hw/hwcomposer.waydroid.so
+      - name: Check multi-window background opacity
+        run: python3 hwcomposer/test_background_opacity.py "$HOME/hwc-work/tree"
       - uses: actions/upload-artifact@v4
         with:
           name: guest-hwcomposer
