@@ -1,0 +1,113 @@
+From: Codex <codex@openai.com>
+Date: Wed, 18 Nov 2026 23:50:00 +0900
+Subject: [PATCH] hwcomposer: attach input method layers to the focused app
+
+InputMethod was always a separate display-sized decorated native window,
+including Gboard's small floating hardware-keyboard toolbar. Route its
+layers into the host-focused task's existing subsurfaces, after computing
+app bounds so the IME cannot enlarge the toplevel. Track host focus locally
+without calling WindowManager from the composer thread. Before first host
+focus, allow only a unique visible, non-blacklisted task. Retain standalone
+presentation if no owner can be established. Neutralize unused subsurfaces
+every frame so changing focus cannot leave an IME in the previous app.
+
+Original work for waydroid-nvidia; modifies MIT-licensed multi-window.cpp
+and Apache-2.0 wayland-hwc sources.
+
+diff --git a/hwcomposer/modes/multi-window.cpp b/hwcomposer/modes/multi-window.cpp
+index b7fbbd6..7d4a33f 100644
+--- a/hwcomposer/modes/multi-window.cpp
++++ b/hwcomposer/modes/multi-window.cpp
+@@ -68,6 +68,33 @@ int multi_window_mode::prepare(hwc_layer_1* hwc_layer, size_t) {
+     return 0;
+ }
+ 
++void multi_window_mode::route_input_method(waydroid_hwc_composer_device_1 *pdev,
++                                                hwc_display_contents_1_t *contents) {
++    const int focused = pdev->display->focused_task.load(std::memory_order_relaxed);
++    const std::string focused_tid = std::to_string(focused);
++    const layer_info *owner = nullptr;
++    for (size_t i = 0; i < contents->numHwLayers; ++i) {
++        const auto &info = layer_infos[i];
++        const auto &layer = contents->hwLayers[i];
++        if (info.type != LayerSplitType::TID || !can_handle_layer(layer) || !layer.handle
++            || (layer.flags & HWC_IS_CURSOR_LAYER)
++            || is_blacklisted(pdev, info.aid, info.component))
++            continue;
++        if (focused >= 0 && info.tid != focused_tid)
++            continue;
++        if (owner && owner->tid != info.tid)
++            return; // no host focus yet and more than one possible app
++        owner = &info;
++    }
++    if (!owner)
++        return; // retain the existing standalone fallback without a known owner
++    for (size_t i = 0; i < contents->numHwLayers; ++i) {
++        auto &info = layer_infos[i];
++        if (info.type == LayerSplitType::RawName && info.aid == "InputMethod")
++            info = *owner;
++    }
++}
++
+ int multi_window_mode::setup_set(waydroid_hwc_composer_device_1* pdev, hwc_display_contents_1_t* contents) {
+     layer_infos.setup(pdev, contents->hwLayers, contents->numHwLayers);
+     content_frames.clear();
+@@ -93,6 +120,8 @@ int multi_window_mode::setup_set(waydroid_hwc_composer_device_1* pdev, hwc_displ
+             bounds.bottom = std::max(bounds.bottom, frame.bottom);
+         }
+     }
++    // Overlay buffers must not contribute their display-sized bounds to the app.
++    route_input_method(pdev, contents);
+     return 0;
+ }
+ 
+@@ -148,8 +177,8 @@ int multi_window_mode::handle_layer(waydroid_hwc_composer_device_1* pdev, hwc_la
+ }
+ 
+ int multi_window_mode::post_processing(waydroid_hwc_composer_device_1 *pdev, hwc_display_contents_1_t *contents) {
+-    if (contents->flags & HWC_GEOMETRY_CHANGED) {
+-        neutralize_remaining_subsurfaces(pdev);
+-    }
++    (void)contents;
++    // Focus can move the IME between apps without changing HWC layer geometry.
++    neutralize_remaining_subsurfaces(pdev);
+     return 0;
+ }
+\ No newline at end of file
+diff --git a/hwcomposer/modes/multi-window.h b/hwcomposer/modes/multi-window.h
+index aa5ca6c..c70ace3 100644
+--- a/hwcomposer/modes/multi-window.h
++++ b/hwcomposer/modes/multi-window.h
+@@ -32,6 +32,7 @@ class multi_window_mode : public waydroid_mode {
+     std::map<std::string, hwc_rect_t> content_frames;
+ 
+     static window *get_window(waydroid_hwc_composer_device_1 *pdev, layer_info &layer_info);
++    void route_input_method(waydroid_hwc_composer_device_1 *, hwc_display_contents_1_t *);
+     static bool can_handle_layer(const hwc_layer_1& layer);
+ 
+   public:
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index f1f4d2e..803c612 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -1570,6 +1570,8 @@ keyboard_handle_enter(void *data, struct wl_keyboard *,
+ 
+         if (window->taskID != "none" && window->taskID != "0")
+             taskID = stoi(window->taskID);
++        if (taskID >= 0)
++            display->focused_task.store(taskID, std::memory_order_relaxed);
+     }
+ 
+     if (display->task != nullptr && taskID >= 0)
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index a58c0bc..7209802 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -449,6 +449,7 @@ struct display {
+     std::list<struct zwp_tablet_tool_v2 *> tablet_tools;
+     std::map<struct zwp_tablet_tool_v2 *, uint16_t> tablet_tools_evt;
+     uint32_t keyboard_enter_serial;
++    std::atomic<int> focused_task{-1}; // last app receiving host keyboard focus
+     /* Serial of the newest serial-carrying input event (focus enter, key,
+      * pointer button, touch). wl_data_device.set_selection must quote the
+      * serial of the event that triggered it: compositors reject a selection

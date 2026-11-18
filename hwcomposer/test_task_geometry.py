@@ -37,6 +37,8 @@ struct wl_buffer {};
 struct window;
 struct open_windows {
     std::map<std::string, window *> entries;
+    auto begin() { return entries.begin(); }
+    auto end() { return entries.end(); }
     template<class F> void erase_if(F predicate) {
         for (auto it = entries.begin(); it != entries.end();) {
             if (predicate(*it)) it = entries.erase(it);
@@ -48,6 +50,7 @@ struct display {
     bool wantDecorations = true;
     bool resizeFollowsWindow = false, resizeUsesReconnect = false;
     std::atomic<bool> multiWindows{true};
+    std::atomic<int> focused_task{-1};
     double scale = 2, output_scale = 2;
     int present_x = 0, present_y = 0;
     int width = 1920, height = 1080;
@@ -58,6 +61,9 @@ struct display {
 struct window {
     struct display *display;
     std::string taskID;
+    struct layer { wl_surface *surface; };
+    std::vector<layer> layers;
+    size_t lastLayer = 0;
     std::mutex content_mutex;
     hwc_rect_t content_frame{};
     int host_width = 0, host_height = 0;
@@ -84,8 +90,12 @@ struct window {
 int native_w, native_h, background_w, background_h;
 std::atomic<int> refreshes{0};
 void request_refresh(display *) { ++refreshes; }
-int background_attaches = 0;
-void wl_surface_attach(wl_surface *, wl_buffer *, int, int) { ++background_attaches; }
+int background_attaches = 0, detached_surfaces = 0;
+void wl_surface_attach(wl_surface *, wl_buffer *buffer, int, int) {
+    if (buffer) ++background_attaches;
+    else ++detached_surfaces;
+}
+void wl_surface_commit(wl_surface *) {}
 void xdg_surface_set_window_geometry(xdg_surface *, int x, int y, int w, int h) {
     assert(x == 0 && y == 0); native_w = w; native_h = h;
 }
@@ -93,10 +103,15 @@ void wp_viewport_set_destination(wp_viewport *, int w, int h) {
     background_w = w; background_h = h;
 }
 enum class LayerSplitType { TID, RawName, Empty };
-struct info { LayerSplitType type; std::string tid; const std::string &key() const { return tid; } };
+struct info {
+    LayerSplitType type;
+    std::string tid, aid, component;
+    const std::string &key() const { return tid; }
+};
+using layer_info = info;
 struct hwc_layer_1 { int compositionType, flags; void *handle; hwc_rect_t displayFrame; };
 constexpr int HWC_IS_CURSOR_LAYER = 1;
-struct hwc_display_contents_1_t { hwc_layer_1 *hwLayers; size_t numHwLayers; };
+struct hwc_display_contents_1_t { hwc_layer_1 *hwLayers; size_t numHwLayers; int flags = 0; };
 struct waydroid_hwc_composer_device_1 { struct display *display; };
 struct split_layer_names_helper {
     std::vector<info> values;
@@ -104,19 +119,28 @@ struct split_layer_names_helper {
     void setup(waydroid_hwc_composer_device_1 *, hwc_layer_1 *, size_t) {}
 };
 void display_resize_arm(display *, int, int) {}
+bool is_blacklisted(waydroid_hwc_composer_device_1 *, const std::string &aid, const std::string &) {
+    return aid == "com.android.launcher3";
+}
 struct multi_window_mode {
     split_layer_names_helper layer_infos;
     std::map<std::string, hwc_rect_t> content_frames;
     static bool can_handle_layer(const hwc_layer_1 &l) { return l.compositionType == 1; }
+    void route_input_method(waydroid_hwc_composer_device_1 *, hwc_display_contents_1_t *);
     int setup_set(waydroid_hwc_composer_device_1 *, hwc_display_contents_1_t *);
     int cleanup_stale_windows(waydroid_hwc_composer_device_1 *, hwc_display_contents_1_t *);
+    int post_processing(waydroid_hwc_composer_device_1 *, hwc_display_contents_1_t *);
 };
 """
     harness += block(source, "bool window::uses_task_geometry() const") + "\n"
     harness += block(source, "bool window::awaiting_task_relayout()") + "\n"
     harness += block(source, "void window::set_content_frame(hwc_rect_t frame)") + "\n"
+    harness += block(mode, "void multi_window_mode::route_input_method(") + "\n"
     harness += block(mode, "int multi_window_mode::setup_set(") + "\n"
     harness += block(mode, "int multi_window_mode::cleanup_stale_windows(") + "\n"
+    helper = (root / "modes/waydroid_mode.cpp").read_text()
+    harness += block(helper, "void neutralize_remaining_subsurfaces(") + "\n"
+    harness += block(mode, "int multi_window_mode::post_processing(") + "\n"
     harness += block(source, "void window::configure_task(") + "\n"
     harness += block(source, "void window::stop_task_resize()") + "\n"
     harness += block(source, "hwc_rect_t window::task_layer_frame(") + "\n"
@@ -238,8 +262,62 @@ int main() {
     w.taskID = "none"; assert(!w.uses_task_geometry());
     w.taskID = "13"; d.multiWindows = false; assert(!w.uses_task_geometry());
     d.multiWindows = true; d.wantDecorations = false; assert(!w.uses_task_geometry());
+    w.bg_buffer = &background;
     map_background(&w);
     assert(background_attaches == 2); // preserve bootstrap for other window modes
+    // Full-display IME is a child of the focused app, not another native window
+    // or part of the app's size. Ignore the launcher when inferring first focus.
+    display overlays;
+    waydroid_hwc_composer_device_1 overlay_pdev{&overlays};
+    hwc_layer_1 overlay_layers[] = {
+        {1, 0, handle, {0, 0, 1920, 1080}},
+        {1, 0, handle, {100, 200, 500, 800}},
+        {1, 0, handle, {0, 0, 1920, 1080}},
+        {1, 0, nullptr, {600, 100, 1000, 700}}
+    };
+    hwc_display_contents_1_t overlay_contents{overlay_layers, 4};
+    multi_window_mode overlay_mode;
+    auto reset_overlay_names = [&] {
+        overlay_mode.layer_infos.values = {
+            {LayerSplitType::TID, "1", "com.android.launcher3"},
+            {LayerSplitType::TID, "13", "com.android.chrome"},
+            {LayerSplitType::RawName, "none", "InputMethod"},
+            {LayerSplitType::TID, "14", "com.android.vending"}
+        };
+    };
+    reset_overlay_names();
+    overlay_mode.setup_set(&overlay_pdev, &overlay_contents);
+    assert(overlay_mode.layer_infos[2].tid == "13");
+    auto chrome_bounds = overlay_mode.content_frames.at("13");
+    assert(chrome_bounds.left == 100 && chrome_bounds.top == 200);
+    assert(chrome_bounds.right == 500 && chrome_bounds.bottom == 800);
+    overlay_layers[3].handle = handle;
+    reset_overlay_names();
+    overlay_mode.setup_set(&overlay_pdev, &overlay_contents);
+    assert(overlay_mode.layer_infos[2].type == LayerSplitType::RawName); // ambiguous before focus
+    overlays.focused_task = 13;
+    reset_overlay_names();
+    overlay_mode.setup_set(&overlay_pdev, &overlay_contents);
+    assert(overlay_mode.layer_infos[2].tid == "13");
+    overlays.focused_task = 14;
+    reset_overlay_names();
+    overlay_mode.setup_set(&overlay_pdev, &overlay_contents);
+    assert(overlay_mode.layer_infos[2].tid == "14"); // follows app focus
+    overlays.focused_task = 99;
+    reset_overlay_names();
+    overlay_mode.setup_set(&overlay_pdev, &overlay_contents);
+    assert(overlay_mode.layer_infos[2].type == LayerSplitType::RawName); // owner disappeared
+    // Moving an overlay removes the old app's extra subsurface even when the
+    // Android layer geometry is unchanged. Preserve an app's relayout gap.
+    window old_app{&overlays, "13"};
+    old_app.layers = {{&surface}, {&surface}};
+    old_app.lastLayer = 1;
+    overlays.windows.entries["13"] = &old_app;
+    overlay_mode.post_processing(&overlay_pdev, &overlay_contents);
+    assert(detached_surfaces == 1);
+    old_app.lastLayer = 0;
+    overlay_mode.post_processing(&overlay_pdev, &overlay_contents);
+    assert(detached_surfaces == 1);
 }
 """
     with tempfile.TemporaryDirectory(prefix="hwc-task-") as tmp:
@@ -249,7 +327,7 @@ int main() {
         subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
                         "-Wno-missing-field-initializers", str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
-    print("PASS: separate task bounds, SSD/background size and local layer placement")
+    print("PASS: task geometry, IME focus routing and stale overlay cleanup")
 
 
 if __name__ == "__main__":
