@@ -74,6 +74,7 @@ the existing `persist.waydroid.window_decorations` SSD option is enabled.
 | 0024 | recompute freeform task bounds each frame so old maximized sizes, task positions and closed tasks cannot accumulate in later window geometry | ours |
 | 0025 | map decorated freeform parents only after the first task frame chooses their size; prevents a display-sized bootstrap configure from enlarging a task again after relayout recreates its window (reproduced with Google Play Store) | ours |
 | 0026 | retain recently resized freeform windows through temporary missing layers during Android relayout, preserving native window identity, position and focus. A one-second grace expires with an off-thread refresh so genuinely closed tasks are still removed | ours |
+| 0027 | associate untagged package/component child surfaces such as Chrome's web content with the package's unique task in the current frame, so multi-window presentation and task bounds include them. Ambiguous packages with multiple tasks remain unresolved | ours |
 
 With native decorations enabled and `waydroid-ssd.jar` installed (see the
 [helper build/install instructions](ssd-overlay/README.md)), single-window mode
@@ -88,6 +89,8 @@ checks both resize paths with transparent and opaque backgrounds using the patch
 and a host compiler. No Android runtime is needed; this does not replace a live compositor check.
 `python3 hwcomposer/test_task_geometry.py build/hwcomposer-work/tree` checks task
 bounds, native window dimensions, local layer placement and configure feedback.
+`python3 hwcomposer/test_child_surfaces.py build/hwcomposer-work/tree` checks
+child routing, ambiguous tasks, system-layer exclusions and per-frame reuse.
 `python3 hwcomposer/test_display_resize.py build/hwcomposer-work/tree` checks the
 logical projection, letterbox cropping, coordinate mapping and resize coalescing.
 
