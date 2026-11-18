@@ -71,6 +71,9 @@ the existing `persist.waydroid.window_decorations` SSD option is enabled.
 | 0021 | preserve each parent's background opacity during xdg configure and display refit: multi-window app/IME parents stay transparent, so the compositor redraws the desktop and other windows behind them instead of leaving corrupt pixels outside the app | ours |
 | 0022 | decorated freeform apps get task-sized parents and local subsurface positions; keep native dimensions separate from Android buffer bounds, fit pending buffers uniformly and invert their viewport for input. Coalesce host resizes/maximize/tiling for 100 ms before resizing only the task; arriving Android frames cannot undo a native resize | ours |
 | 0023 | single-window SSD on stock HALs: debounce native sizes, call WindowManager through the Java helper, and present only its physical projection's content rect. Crop the client target's letterbox, retain physical input coordinates, and clear the logical override in multi-window mode. Capable HALs keep their physical reconnect path | ours |
+| 0024 | recompute freeform task bounds each frame so old maximized sizes, task positions and closed tasks cannot accumulate in later window geometry | ours |
+| 0025 | map decorated freeform parents only after the first task frame chooses their size; prevents a display-sized bootstrap configure from enlarging a task again after relayout recreates its window (reproduced with Google Play Store) | ours |
+| 0026 | retain recently resized freeform windows through temporary missing layers during Android relayout, preserving native window identity, position and focus. A one-second grace expires with an off-thread refresh so genuinely closed tasks are still removed | ours |
 
 With native decorations enabled and `waydroid-ssd.jar` installed (see the
 [helper build/install instructions](ssd-overlay/README.md)), single-window mode

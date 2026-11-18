@@ -1,0 +1,88 @@
+From: Codex <codex@openai.com>
+Date: Wed, 18 Nov 2026 22:45:00 +0900
+Subject: [PATCH] hwcomposer: preserve freeform windows through task relayout
+
+Resizing Google Play Store temporarily removes its task layers from the HWC
+frame. Immediate stale-window cleanup destroys the native toplevel, losing
+position and focus on every resize. Retain recently resized task windows
+through a bounded one-second relayout gap. Existing subsurfaces keep the
+last frame visible until the task's new layers arrive.
+
+The existing resize worker requests a refresh on expiry outside composer
+locks, so genuinely missing tasks are cleaned up even if Android stopped
+drawing. Explicit native close still removes the window immediately.
+Original work for waydroid-nvidia; modifies Apache-2.0 hwcomposer sources.
+
+diff --git a/hwcomposer/modes/multi-window.cpp b/hwcomposer/modes/multi-window.cpp
+index 7e09f4d..b7fbbd6 100644
+--- a/hwcomposer/modes/multi-window.cpp
++++ b/hwcomposer/modes/multi-window.cpp
+@@ -108,7 +108,10 @@ int multi_window_mode::cleanup_stale_windows(waydroid_hwc_composer_device_1* pde
+                 return false;
+             }
+         }
+-        return true;
++        /* SurfaceFlinger can omit every task layer while Android relays out
++         * a resized app. Keep its native window, position and focus through
++         * that gap instead of destroying and recreating the toplevel. */
++        return !it.second->awaiting_task_relayout();
+     });
+ 
+     pdev->display->ignored_apps.clear();
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index dcc1596..f1f4d2e 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -924,6 +924,12 @@ hwc_rect_t window::task_layer_frame(hwc_rect_t frame) {
+              (int)ceil(y + (frame.bottom - content_frame.top) * scale) };
+ }
+ 
++bool window::awaiting_task_relayout() {
++    std::scoped_lock lock(content_mutex);
++    return uses_task_geometry() &&
++        std::chrono::steady_clock::now() < task_relayout_deadline;
++}
++
+ void window::configure_task(int width, int height) {
+     std::scoped_lock lock(content_mutex);
+     if (!host_width || !host_height || (host_width == width && host_height == height))
+@@ -932,12 +938,25 @@ void window::configure_task(int width, int height) {
+     host_height = height;
+     task_resize_pending = true;
+     task_resize_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
++    // ponytail: bounded relayout grace; task lifecycle notifications if relayout can exceed 1 s.
++    task_relayout_deadline = task_resize_deadline + std::chrono::seconds(1);
+     if (!task_resize_thread.joinable()) {
+         task_resize_thread = std::thread([this]() {
+             std::unique_lock<std::mutex> lock(content_mutex);
+             while (!task_resize_quit) {
+                 if (!task_resize_pending) {
+-                    task_resize_cond.wait(lock);
++                    if (task_relayout_deadline == std::chrono::steady_clock::time_point{}) {
++                        task_resize_cond.wait(lock);
++                    } else if (std::chrono::steady_clock::now() < task_relayout_deadline) {
++                        task_resize_cond.wait_until(lock, task_relayout_deadline);
++                    } else {
++                        task_relayout_deadline = {};
++                        /* Ensure a truly closed task is cleaned up even if Android
++                         * stopped drawing. Never invalidate under content_mutex. */
++                        lock.unlock();
++                        request_refresh(display);
++                        lock.lock();
++                    }
+                     continue;
+                 }
+                 const auto deadline = task_resize_deadline;
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 667dc49..a58c0bc 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -231,6 +231,8 @@ struct window {
+     std::condition_variable task_resize_cond;
+     bool task_resize_quit = false, task_resize_pending = false;
+     std::chrono::steady_clock::time_point task_resize_deadline;
++    std::chrono::steady_clock::time_point task_relayout_deadline{};
++    bool awaiting_task_relayout();
+     bool uses_task_geometry() const;
+     void set_content_frame(hwc_rect_t frame);
+     void resize_task(int width, int height);
