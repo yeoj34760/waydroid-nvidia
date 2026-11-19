@@ -32,6 +32,7 @@ NAT=$LIB/native
 files=(
     dev/source-native
     dev/driver-mode
+    dev/doctor
     waydroid/nvidia_native.py
     tools/native_rust_profile.py
     packaging/native/release_gate.py

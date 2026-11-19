@@ -29,6 +29,16 @@ git add -A patches/ src/ && git commit
 
 ## Individual commands
 
+For an installed Waydroid, run `dev/doctor` to check generated NVIDIA mounts,
+the container service, Android boot, SurfaceFlinger and recent crash logs.
+Run `dev/doctor --fix` from your Wayland desktop terminal to stop the full stack,
+regenerate the configuration with `waydroid upgrade -o`, restart and check boot
+(up to 120 seconds). This also handles a foreground `sudo waydroid container start`
+manager. Privileged commands use `sudo -n`; run `sudo -v` yourself first if needed.
+Exit status is 0 for healthy, 1 for a failed check or recovery, 2 for invalid usage.
+Recovery keeps the selected driver mode and does not download images. If recovery
+fails, it leaves the failure visible; it does not force-kill processes or reset app data.
+
 | Command | Does |
 |---|---|
 | `dev/build <comp>` | compile one component (`mesa`/`virgl`/`hwc`/`gralloc`/`angle`/`all`) via the shared recipe `build/<comp>/build.sh` |

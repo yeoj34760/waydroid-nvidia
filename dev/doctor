@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Diagnose installed Waydroid; --fix regenerates mounts and restarts the full stack."""
+import argparse
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+WORK = Path('/var/lib/waydroid')
+GENERATOR = Path('/usr/lib/waydroid/tools/helpers/nvidia_native.py')
+UNIT = 'waydroid-container.service'
+LXC = ['-P', str(WORK / 'lxc'), '-n', 'waydroid']
+
+
+def run(*args, check=False, timeout=30):
+    result = subprocess.run(args, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, timeout=timeout)
+    if check and result.returncode:
+        raise RuntimeError(f'{" ".join(args)}\n{result.stdout.strip()}')
+    return result
+
+
+def root(*args, **kwargs):
+    return run('sudo', '-n', *args, **kwargs)
+
+
+def guest(command):
+    return root('lxc-attach', *LXC, '--clear-env', '--',
+                '/system/bin/sh', '-c', command)
+
+
+def mount_errors(expected, actual):
+    want = [line for line in expected.splitlines() if line.startswith('lxc.mount.entry = ')
+            and ' /dev/dri/renderD' not in line]
+    have = actual.splitlines()
+    errors = [f'missing: {line}' for line in want if line not in have]
+    # Old RM minors can expose a different GPU even when the correct minor is also present.
+    errors += [f'stale GPU: {line}' for line in have
+               if line.startswith('lxc.mount.entry = /dev/nvidia') and line not in want]
+    if [line for line in have if line in want] != [line for line in want if line in have]:
+        errors.append('generated mounts are out of order')
+    return errors
+
+
+def diagnose():
+    errors = []
+    print(run('waydroid', 'status').stdout.strip())
+    generated = root('python3', str(GENERATOR), '--cfg', str(WORK / 'waydroid.cfg'))
+    # The generator announces the driver mode on stderr (merged above).
+    if generated.returncode:
+        errors.append(generated.stdout.strip())
+    else:
+        errors += mount_errors(generated.stdout, (WORK / 'lxc/waydroid/config_nodes').read_text())
+    service = run('systemctl', 'is-active', UNIT)
+    if service.returncode:
+        errors.append(f'{UNIT}: {service.stdout.strip()}')
+        print(run('journalctl', '-u', UNIT, '-n', '12', '--no-pager').stdout.strip())
+    state = root('lxc-info', *LXC, '-sH')
+    if state.returncode or state.stdout.strip() != 'RUNNING':
+        errors.append('LXC is not running: ' + state.stdout.strip())
+    else:
+        boot = guest('getprop sys.boot_completed; getprop init.svc.surfaceflinger')
+        if boot.returncode or boot.stdout.split() != ['1', 'running']:
+            errors.append('Android boot / SurfaceFlinger: ' + repr(boot.stdout.strip()))
+        print(guest("dumpsys SurfaceFlinger | grep 'GLES:'").stdout.strip())
+        print(guest('logcat -d -b crash -t 15').stdout.strip())
+    for error in errors:
+        print('FAIL:', error)
+    print('PASS: mounts, service, Android boot and SurfaceFlinger' if not errors
+          else 'Use --fix to regenerate configuration and restart; other driver failures may need waydroid-nvidia-setup.')
+    return not errors
+
+
+def stop_manual_manager():
+    # `waydroid container stop` leaves the foreground D-Bus manager alive.
+    # Ask D-Bus for its actual owner rather than killing by a process-name match.
+    owner = run('busctl', '--system', 'call', 'org.freedesktop.DBus',
+                '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+                'GetConnectionUnixProcessID', 's', 'id.waydro.Container')
+    if owner.returncode:
+        if 'NameHasNoOwner' in owner.stdout or 'does not exist' in owner.stdout:
+            return
+        raise RuntimeError('Cannot identify container manager: ' + owner.stdout)
+    kind, pid_text = owner.stdout.split()
+    if kind != 'u' or not pid_text.isdecimal():
+        raise RuntimeError('Unexpected D-Bus PID: ' + owner.stdout)
+    pid = int(pid_text)
+    proc = Path(f'/proc/{pid}')
+    command = (proc / 'cmdline').read_bytes().split(b'\0')
+    if not (any(Path(os.fsdecode(arg)).name in ('waydroid', 'waydroid.py') for arg in command)
+            and b'container' in command and b'start' in command):
+        raise RuntimeError(f'Refusing to stop unexpected D-Bus owner {pid}: {command!r}')
+    root('kill', f'-{signal.SIGTERM.value}', str(pid), check=True)
+    deadline = time.monotonic() + 20
+    while proc.exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f'Container manager {pid} did not stop; no forced kill attempted')
+        time.sleep(.2)
+
+
+def repair():
+    if not os.environ.get('WAYLAND_DISPLAY') or not os.environ.get('XDG_RUNTIME_DIR'):
+        raise RuntimeError('Run --fix from a terminal in your Wayland desktop session')
+    root('lxc-info', '--version', check=True)  # Fail before stopping anything if sudo is unavailable.
+    print('Stopping session and container, regenerating mounts, restarting full stack...', flush=True)
+    session_unit = run('systemctl', '--user', 'show', 'wd-session.service', '-p', 'LoadState', '--value')
+    if session_unit.stdout.strip() == 'loaded':
+        run('systemctl', '--user', 'stop', 'wd-session.service', check=True)
+    run('waydroid', 'session', 'stop', check=True)
+    root('systemctl', 'stop', UNIT, check=True)
+    stop_manual_manager()
+    root('waydroid', 'container', 'stop', check=True)
+    root('waydroid', 'upgrade', '-o', check=True, timeout=120)
+    venus = run('systemctl', '--user', 'show', 'wd-venus.service', '-p', 'LoadState', '--value')
+    if venus.stdout.strip() == 'loaded':
+        run('systemctl', '--user', 'restart', 'wd-venus.service', check=True)
+    root('systemctl', 'start', UNIT, check=True, timeout=60)
+    run('systemd-run', '--user', '--unit=wd-session', '--collect',
+        '--setenv=WAYLAND_DISPLAY=' + os.environ['WAYLAND_DISPLAY'],
+        '--setenv=XDG_RUNTIME_DIR=' + os.environ['XDG_RUNTIME_DIR'],
+        '/usr/bin/waydroid', 'session', 'start', check=True)
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        boot = guest('getprop sys.boot_completed; getprop init.svc.surfaceflinger')
+        if boot.returncode == 0 and boot.stdout.split() == ['1', 'running']:
+            return
+        time.sleep(2)
+    raise RuntimeError('Android did not finish booting within 120 seconds; run dev/doctor for logs')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--fix', action='store_true', help='stop the session, regenerate mounts and restart (no image download)')
+    args = parser.parse_args()
+    if os.geteuid() == 0:
+        parser.error('run as your desktop user; privileged commands use sudo -n (sudo -v first if needed)')
+    try:
+        if args.fix:
+            repair()
+        return 0 if diagnose() else 1
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        print(f'doctor: {error}', file=sys.stderr)
+        print('No further recovery attempted. Check waydroid status and journalctl -u waydroid-container.', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
