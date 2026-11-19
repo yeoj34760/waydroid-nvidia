@@ -202,18 +202,16 @@ jobs:
           key: hwc-work-${{ hashFiles('hwcomposer/pins.env', 'hwcomposer/provision.sh') }}
       - name: Provision (every input pinned in hwcomposer/pins.env, sha256-checked)
         run: HWC_WORK="$HOME/hwc-work" ./hwcomposer/provision.sh
-      - name: Build hwcomposer.waydroid.so (android_hardware_waydroid at HWC_SHA + hwcomposer/patches)
+      - name: Build hwcomposer.waydroid.so (maintained fork at HWC_SHA)
         run: |
           HWC_WORK="$HOME/hwc-work" ./hwcomposer/build.sh "$PWD/hwc-out"
-          cat hwc-out/PATCHES
+          cat hwc-out/SOURCE
           mkdir -p stage/vendor/lib64/hw
           cp hwc-out/hwcomposer.waydroid.stripped.so stage/vendor/lib64/hw/hwcomposer.waydroid.so
-      - name: Check multi-window background opacity
-        run: python3 hwcomposer/test_background_opacity.py "$HOME/hwc-work/tree"
-      - name: Check decorated freeform task geometry
-        run: python3 hwcomposer/test_task_geometry.py "$HOME/hwc-work/tree"
-      - name: Check single-window logical display resize
-        run: python3 hwcomposer/test_display_resize.py "$HOME/hwc-work/tree"
+      - name: Run hwcomposer fork regression checks
+        run: sh "$HOME/hwc-work/tree/tests/hwcomposer/run.sh"
+      - name: Check vendor-image fork selection and tree stamps
+        run: python3 vendor-image/test_hwc_fork.py
       - uses: actions/upload-artifact@v4
         with:
           name: guest-hwcomposer
@@ -499,7 +497,7 @@ jobs:
           verify_android_elf prebuilts/system/bin/surfaceflinger ELF64 'Advanced Micro Devices X86-64'
           chmod 0755 prebuilts/system/bin/surfaceflinger
           (cd prebuilts && find vendor system -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.prebuilts)
-          printf 'CI-built guest prebuilts: hwcomposer (hwcomposer/provision.sh clean-room, hwcomposer/patches),\nANGLE (pinned %s + angle/patches), surfaceflinger (lineage-20 tree, self-hosted runner).\n' "${ANGLE_SHA:-see pins}" > prebuilts/README.txt
+          printf 'CI-built guest prebuilts: hwcomposer (hwcomposer/provision.sh clean-room, pinned source fork),\nANGLE (pinned %s + angle/patches), surfaceflinger (lineage-20 tree, self-hosted runner).\n' "${ANGLE_SHA:-see pins}" > prebuilts/README.txt
           tar --zstd -C prebuilts -cf "out/waydroid-nvidia-guest-prebuilts-${TAG}.tar.zst" .
           # native driver modes: nvidia-prolapse payload in the staged-root layout + build record
           mkdir -p native && cp -a artifacts/guest-native/. native/

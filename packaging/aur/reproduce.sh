@@ -112,7 +112,7 @@ do_virgl() {
 }
 
 do_hwc() {
-    say "hwc: hwcomposer/provision.sh + build.sh (pinned HWC_SHA + hwcomposer/patches)"
+    say "hwc: hwcomposer/provision.sh + build.sh (maintained fork at pinned HWC_SHA)"
     if HWC_WORK="$WORK/hwc-work" "$REPO/hwcomposer/provision.sh" >/dev/null \
         && HWC_WORK="$WORK/hwc-work" "$REPO/hwcomposer/build.sh" "$WORK/hwc-out"; then
         [ -f "$WORK/hwc-out/hwcomposer.waydroid.stripped.so" ] \

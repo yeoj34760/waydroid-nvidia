@@ -1,3 +1,11 @@
+# Current hwcomposer source
+
+The prolapse image now builds `hardware/waydroid` from the maintained fork at
+`HWC_UPSTREAM` / `HWC_SHA` in `hwcomposer/pins.env`, shared with the standalone NDK
+build. The old `vendor-image/patches/hardware/waydroid` series has moved into fork
+commits, including the Soong build settings. Stock reproduction and SF jobs still
+use the historical manifest. The notes below describe earlier builds and plans.
+
 # Waydroid vendor image from source
 
 Status 2026-10-16 (later): the vendor image is how nvidia-prolapse installs for users (section "Install path for

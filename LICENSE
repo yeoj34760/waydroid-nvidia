@@ -63,7 +63,6 @@ Exceptions (inherit the upstream or stated license):
     waydroid/0001-lxc-nvidia-native-mounts.patch
                                       GPL-3.0-or-later (installed into Waydroid)
     waydroid/patches/                 Apache-2.0    (AOSP frameworks/native)
-    hwcomposer/patches/               Apache-2.0    (android_hardware_waydroid)
     hwcomposer/aidl-stubs/, nvidia-prolapse/hal/include/android/,
     nvidia-prolapse/hal/include/host/, nvidia-prolapse/media/c2/,
     nvidia-prolapse/media/odm/, nvidia-prolapse/media/vndk/patches/

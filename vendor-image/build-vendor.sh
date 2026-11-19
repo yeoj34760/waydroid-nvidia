@@ -5,7 +5,8 @@
 #   preflight  tree, tools, disk (fails loudly, names the remedy)
 #   checkout   put the tree in this job's state: the pinned manifest (tree-checkout.py) + Waydroid's base patches
 #              (vendor/extra/waydroid-patches) + the job's own patch layer (VENDOR_PRODUCT=prolapse:
-#              vendor-image/patches/<project>/*.patch; sf: patches/lineage-20/frameworks-native, build.yml's SF job;
+#              the hwcomposer fork + vendor-image/patches/<project>/*.patch;
+#              sf: patches/lineage-20/frameworks-native, build.yml's SF job;
 #              stock: none, and our product layer is removed). Skipped when the tree's stamp says it is already
 #              there (see "Tree state" below); otherwise only the projects that differ are touched.
 #   product    (VENDOR_PRODUCT=prolapse) install the product layer (vendor-image/product -> device/nvidia-prolapse,
@@ -69,6 +70,7 @@ preflight() {
 #            the manifest's hash (line 1: "# key ...")
 #   layer  = the job's own patch series (vendor-image/patches, or patches/lineage-20 for SF), keyed by the hash of
 #            every patch with its target project
+#            and (for prolapse) the hwcomposer fork URL and commit from hwcomposer/pins.env
 # $TREE/.ci-tree-stamp.tsv records the whole tree (every project's HEAD) under the key "base + layer" after a job
 # put it there; it is deleted before anything in the tree is changed, so an interrupted job leaves no stamp.
 # checkout: stamp key == this job's key and every project still at its recorded HEAD with no tracked changes
@@ -87,7 +89,10 @@ layer_series() {   # "project<TAB>patch" per line, in apply order, for the job's
         prolapse) local dir proj p
                   for dir in "$HERE"/patches/*/*/; do
                       proj=${dir#"$HERE"/patches/}; proj=${proj%/}
-                      for p in "$dir"*.patch; do printf '%s\t%s\n' "$proj" "$p"; done
+                      for p in "$dir"*.patch; do
+                          [ -f "$p" ] || continue
+                          printf '%s\t%s\n' "$proj" "$p"
+                      done
                   done ;;
         sf)       local p; for p in "$REPO"/patches/lineage-20/frameworks-native/*.patch; do
                       [ -e "$p" ] && printf 'frameworks/native\t%s\n' "$p"; done ;;
@@ -96,11 +101,22 @@ layer_series() {   # "project<TAB>patch" per line, in apply order, for the job's
 
 checkout() {
     local base_key layer_key want log series proj p t0=$SECONDS
+    # The stock/SF jobs retain the historical manifest. Only our vendor image
+    # replaces hardware/waydroid, using the same source pin as the NDK build.
+    source "$REPO/hwcomposer/pins.env" || die "cannot load hwcomposer source pin"
     [ -f "$TREE/build/envsetup.sh" ] && [ -d "$TREE/.repo" ] || die "no synced LineageOS tree at $TREE (set LINEAGE_TREE)"
     base_key="manifest-$(sha256sum < "$MANIFEST" | cut -c1-16)"
     series=$(layer_series)
-    layer_key="$VENDOR_PRODUCT-$(printf '%s\n' "$series" | while IFS=$'\t' read -r proj p; do
-        [ -n "$p" ] && printf '%s %s\n' "$proj" "$(sha256sum < "$p")"; done | sha256sum | cut -c1-16)"
+    layer_key="$VENDOR_PRODUCT-$(
+        {
+            if [ "$VENDOR_PRODUCT" = prolapse ]; then
+                printf 'hardware/waydroid %s %s\n' "$HWC_UPSTREAM" "$HWC_SHA"
+            fi
+            printf '%s\n' "$series" | while IFS=$'\t' read -r proj p; do
+                [ -n "$p" ] || continue
+                printf '%s %s\n' "$proj" "$(sha256sum < "$p")"
+            done
+        } | sha256sum | cut -c1-16)"
     want="$base_key $layer_key"
     log=$(mktemp)
     if [ "$(head -1 "$STAMP" 2>/dev/null)" = "# key $want" ]; then
@@ -144,6 +160,13 @@ checkout() {
     touch "$TREE/.waydroid-patches-applied"
     if [ "$VENDOR_PRODUCT" = stock ]; then
         local d; for d in $PRODUCT_DIRS; do rm -rf "${TREE:?}/$d"; done   # not repo projects: the product stage installs them
+    fi
+    if [ "$VENDOR_PRODUCT" = prolapse ]; then
+        step "checkout hwcomposer fork $HWC_SHA"
+        if ! git -C "$TREE/hardware/waydroid" cat-file -e "$HWC_SHA^{commit}" 2>/dev/null; then
+            git -C "$TREE/hardware/waydroid" fetch "$HWC_UPSTREAM" "$HWC_SHA" || die "cannot fetch hwcomposer fork $HWC_SHA"
+        fi
+        git -C "$TREE/hardware/waydroid" checkout --detach "$HWC_SHA" || die "cannot checkout hwcomposer fork $HWC_SHA"
     fi
     if [ -n "$series" ]; then
         step "apply the $VENDOR_PRODUCT patch layer"

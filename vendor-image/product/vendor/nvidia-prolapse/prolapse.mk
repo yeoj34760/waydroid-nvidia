@@ -49,7 +49,7 @@ PRODUCT_VENDOR_PROPERTIES += \
 
 # Display resize: this image's composer HAL (vendor-image/patches/hardware/interfaces) survives a primary display
 # reconnect while frames are in flight, so hwcomposer.waydroid lets the Android display follow the window with one
-# (patches/hardware/waydroid 0018). Without the property hwcomposer never sends a reconnect.
+# (the hwcomposer fork's display-resize.cpp). Without the property hwcomposer never sends a reconnect.
 PRODUCT_VENDOR_PROPERTIES += \
     ro.vendor.composer.safe_primary_reconnect=true
 

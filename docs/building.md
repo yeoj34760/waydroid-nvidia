@@ -33,7 +33,7 @@ tests/              host probes and the portable GPU probe
 3. Venus gralloc backend: `src/minigbm-vtest/vtest_wrapper.c` against pinned minigbm (`build/gralloc/build.sh`).
 4. hwcomposer: `hwcomposer/provision.sh` fetches every prerequisite from pinned public sources (AOSP headers,
    hidl-gen, static wayland/libffi/xkbcommon, link stubs from the pinned images, no root needed), then
-   `hwcomposer/build.sh` applies `hwcomposer/patches/` and builds with the NDK. Pins: `hwcomposer/pins.env`.
+   `hwcomposer/build.sh` builds the maintained source fork directly with the NDK. Pins: `hwcomposer/pins.env`.
 5. ANGLE: `ANGLE_SHA` in `packaging/ci/pins.env`, `build/angle/args-x86{,_64}.gn`. The checkout needs about 16 GB.
 6. SurfaceFlinger: `build/lineage-20/build.sh sf` on a LineageOS 20 tree (about 150 GB). Don't source AOSP's
    `envsetup.sh` from a `set -u` script.

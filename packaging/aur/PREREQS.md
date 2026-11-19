@@ -14,7 +14,7 @@ reference for what the script provides.
 | **mesa** (guest venus, x86 + x86_64) | `build/mesa/build.sh` | ✅ yes — **CI-built** (build.yml matrix) | none — NDK + meson + glslang makedeps |
 | **virglrenderer** (host) | `build/virglrenderer/build.sh` | ✅ yes — **CI-built** (build.yml) | none — meson + venus/vulkan headers |
 | **gralloc** backend | `build/gralloc/build.sh` | ✅ yes — **CI-built** (build.yml) | minigbm fetched at pin in CI |
-| **hwcomposer** | `hwcomposer/provision.sh` + `build.sh` (+ `hwcomposer/patches/`) | ✅ yes — **CI-built** (clean-room, hwcomposer/pins.env) | none |
+| **hwcomposer** | `hwcomposer/provision.sh` + `build.sh` (pinned source fork) | ✅ yes — **CI-built** (clean-room, hwcomposer/pins.env) | none |
 | **ANGLE** (x86 + x86_64) | `build/angle/args-x86{,_64}.gn` | ✅ **CI-built** on tags/dispatch (~2 h, pinned ANGLE_SHA) | none |
 | **surfaceflinger** | `build/lineage-20/build.sh` | ✅ **CI-built** on the self-hosted runner (label: lineage) | runner host carries the synced tree |
 

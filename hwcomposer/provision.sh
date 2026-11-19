@@ -8,7 +8,7 @@
 #   ndk/                     the pinned NDK (r29)
 #   deps/                    AOSP header clones, hidl-gen + its output, static wayland/ffi/xkbcommon
 #                            for bionic, libdrm headers, wayland-protocols, image link stubs
-#   src/                     android_hardware_waydroid at HWC_SHA (patched by build.sh, not here)
+#   deps/src/                the maintained android_hardware_waydroid fork at HWC_SHA
 # Every download is sha256-checked against pins.env; a missing or wrong pin fails loudly.
 # Each stage is idempotent (a .provisioned stamp holds the pin it was made from).
 set -euo pipefail

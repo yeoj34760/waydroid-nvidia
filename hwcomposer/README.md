@@ -1,113 +1,63 @@
-# hwcomposer — `hwcomposer.waydroid.so` from pinned source
+# hwcomposer — build from the maintained source fork
 
-The guest's composer HAL (`/vendor/lib64/hw/hwcomposer.waydroid.so`, loaded by
-`android.hardware.graphics.composer@2.1-service`; the image loads no 32-bit composer) is built
-here from Waydroid's hwcomposer at a pinned commit plus the patches in `patches/`, standalone with
-the NDK (no AOSP tree). Nothing is binary-patched.
+The guest composer HAL (`/vendor/lib64/hw/hwcomposer.waydroid.so`) is built from
+[yeoj34760/android_hardware_waydroid](https://github.com/yeoj34760/android_hardware_waydroid),
+pinned by URL and full commit SHA in `pins.env`. The fork tracks upstream
+`lineage-20` for the Android 13 images used here. Source changes and host regression
+tests live in that repository; this directory holds the standalone NDK build glue.
 
-## Pins (`pins.env`)
-
-| Input | Pin |
-|---|---|
-| hwcomposer | `waydroid/android_hardware_waydroid` `a3e42399afbd23613f123a28bda658a4c6c1faec` (lineage-20, 2026-10-18; the vendor image's `hardware/waydroid` pin) |
-| NDK | r29 (`14206865`), zip sha256 `4abbbcdc…` (what built the prebuilt: `.note.android.ident`) |
-| AOSP headers | android-13-era commits of libhidl, libhwbinder, libfmq, fmtlib, frameworks/native, hardware/interfaces, system/tools/hidl, libbase, libhardware, system/core; LineageOS system_logging; waydroid minigbm `16844bab` (same values as the baseline's `packaging/ci/hwc-pins.env`) |
-| Static guest libs | libffi 3.4.6, wayland 1.25.0 (+ native wayland-scanner), libxkbcommon 1.7.0, libdrm 2.4.133 headers; tarball sha256s in `pins.env` |
-| Protocol XMLs | wayland-protocols 1.49 (regenerates the baseline's committed `gen/*.c|h` byte for byte) |
-| Link stubs | the local Waydroid images (`images_path` in waydroid.cfg), else the pinned OTA zips |
+The former 29-patch series is preserved in Git history and in the fork's individual
+source commits. Patch 0009 is superseded by upstream `4aee4c8` (leave the service's
+binder threadpool configuration alone). The vendor-image-only Android.bp change
+for cross-GPU presentation is also included in the fork. No hwcomposer patches
+are applied by this repository's builds.
 
 ## Build
 
 ```sh
-hwcomposer/provision.sh          # once: NDK, clones, hidl-gen, static libs, protocols, link stubs (~10 min)
-hwcomposer/build.sh              # -> build/hwcomposer-work/out/hwcomposer.waydroid.{so,stripped.so}
-HWC_PATCHES_UPTO=0001 hwcomposer/build.sh build/hwcomposer-work/out-repro   # the reproduction alone
+hwcomposer/provision.sh          # pinned source, NDK, headers, host tools and link stubs
+hwcomposer/build.sh              # build/hwcomposer-work/out/hwcomposer.waydroid.{so,stripped.so}
+sh build/hwcomposer-work/tree/tests/hwcomposer/run.sh
 ```
 
-`prime-copy.cpp` (added by 0014) is compiled when the patched tree has it, so `HWC_PATCHES_UPTO`
-below 0014 still builds. It loads the guest's `libvulkan.so` with `dlopen` only when the compositor
-is on another GPU; the same-GPU path does not touch Vulkan.
+The build extracts the pinned fork commit into `build/hwcomposer-work/tree`.
+`out/SOURCE` records the source URL and commit. The host tests cover background
+opacity, task geometry, child/IME routing, logical display resize, RGB565 read-back
+and cleanup after partial buffer creation. They do not replace a live compositor
+check. CI runs the same build and tests.
 
-`build.sh` applies the patches in a fresh git tree and fails if one does not apply or changes
-nothing (a `git apply` in a non-repo directory inside another work tree silently skips every path).
-`-ffile-prefix-map` and fixed xkbcommon config roots keep build-host paths out of the binary; on the
-former base 7750307 with the baseline's build paths mapped back in, `HWC_PATCHES_UPTO=0001`
-reproduced the baseline's prebuilt hwcomposer byte for byte (checked in the development tree).
+For local edits:
 
-Glue copied from the baseline's former `build/hwcomposer/` (MIT; this tree replaced it): `hidl-gen/` (CMake for a standalone
-hidl-gen), `libcxx_compat.cpp` and `libcxx-override/__config_site` (r29 libc++ headers vs the
-image's libc++), `aidl-stubs/` (hand-written minimal declarations of the graphics.common AIDL
-types that libui's headers include). `provision.sh`/`build.sh` are adapted from its
-`build/hwcomposer/` (removed; this is now the only hwcomposer recipe, for all three driver modes).
+```sh
+HWC_SRC=/path/to/android_hardware_waydroid hwcomposer/build.sh
+sh /path/to/android_hardware_waydroid/tests/hwcomposer/run.sh
+```
 
-## Patches
+`HWC_SRC` builds the checkout directly and records its commit and tracked dirty
+state in `SOURCE`. `HWC_PATCHES_UPTO` is retired; use a fork checkout at a chosen
+commit for comparisons. Commit and push source changes in the fork before updating
+`HWC_SHA`, so fresh package/CI builds can fetch that commit.
 
-For desktop title bars in multi-window mode, see the optional
-[SSD resource overlay](ssd-overlay/README.md). It hides Android's caption when
-the existing `persist.waydroid.window_decorations` SSD option is enabled.
+The prolapse vendor-image build checks out the same fork commit for
+`hardware/waydroid`, then builds it with Soong. Stock reproduction and
+SurfaceFlinger builds retain their historical source manifest. Updating the fork
+pin invalidates the prolapse tree stamp.
 
-| # | What | Source |
-|---|---|---|
-| 0001 | Baseline WIP + issue #5 (decorations, resize as scaled view + display-mode ladder, clipboard, window-lifetime fix) | waydroid-nvidia (2026-07-28) |
-| 0002 | `formats_mutex` around formats/modifiers | PR #20 `45d12b1` (The-JimmyDev) |
-| 0003 | refuse LINEAR for formats the compositor imports through NVIDIA EGL (per format) | quinovax `f2c2f39` (`compositor_uses_nvidia_egl`), reworked |
-| 0004 | keep the wl_buffer cache across geometry changes and hotplug; prune after 8 unused frames; dma-buf inode identity | quinovax `f2c2f39` + `ad04e0a`; identity ours |
-| 0005 | no abort() on per-frame / unreachable conditions | quinovax `ad04e0a`, reworked |
-| 0006 | lost Wayland connection: named cause, `waydroid.hwc.wayland_lost`, exit 75 | ours (replaces quinovax's frozen HAL) |
-| 0007 | ignore SIGPIPE | quinovax `1608854`/`74f7b93` |
-| 0008 | cursor buffer importability check | quinovax `ad04e0a` |
-| 0009 | never shrink the HIDL thread pool | problem from quinovax `74f7b93`, fix ours |
-| 0010 | wl_shm fallback for undisplayable layers | quinovax `f2c2f39` |
-| 0011 | acquire-fence timeout 1 s, still presents completely | quinovax `f2c2f39` |
-| 0012 | `wp_presentation` timestamps only on CLOCK_MONOTONIC; vsync arithmetic | quinovax `f2c2f39` |
-| 0013 | viewport source clamped to the buffer | quinovax `f2c2f39`, rotation fix ours |
-| 0014 | compositor on another GPU (hybrid iGPU, baseline #2): dmabuf v4 feedback decides same-GPU direct vs cross-GPU; cross-GPU copies the client target with Vulkan into system-memory LINEAR (pitch 256-aligned) and composes every other layer in SurfaceFlinger; `waydroid.hwc.present_path` | ours; recipe = NVIDIA driver's own cross-GPU present (observed) / egl-wayland2 `force_prime` |
-| 0015 | YUV layers (Chrome/ExoPlayer video on a SurfaceControl, NV12 from the Codec2 decoder) are composed by SurfaceFlinger, never attached: hwc1 has no dataspace, and KWin 6.7/NVIDIA advertises NV12+LINEAR yet rejects that import (fatal error 7, exit 75, SF abort, soft reboot). Every dma-buf plane of the gralloc handle is passed and a plane-count mismatch is refused; wl_shm fallback fails loudly for formats without a wl_shm equivalent | ours |
-| 0016 | never call `hwc_procs_t::hotplug`: `hwc_set()` sent hotplug(0, 1) after every xdg configure (resize, activation); the 20260927 vendor `libhwc2on1adapter` forwards primary hotplugs, the synchronous callback runs nested on SurfaceFlinger's main thread inside `presentAndGetReleaseFences`, SF recreates the display and dereferences the erased `DisplayData` (SEGV 2026-10-16; upstream waydroid/android_hardware_waydroid#84). `#pragma GCC poison hotplug` makes a new call from those files a build error; live check `dev/hwc-hotplug-check` (KDE Plasma) | ours |
-| 0017 | the Android display follows the window (vanilla resize, upstream 40c54a5), safely: a settled window size (`persist.waydroid.resize_settle_ms`, default 250 ms as upstream's lineage-23.2 hwcomposer) becomes the display's only config and the hotplug is sent from hwc's own resize thread (`display-resize.cpp`, the only caller), never from a composer call. Needs a composer HAL that survives a primary reconnect with frames in flight; enabled only when the vendor image declares `ro.vendor.composer.safe_primary_reconnect=true` (our vendor image, with its `hardware/interfaces` patch). Without it no physical reconnect is sent (0023 adds a logical fallback); the composer log says which path is active | ours |
-| 0018 | single-window mode: the per-app window **is** the Android display, so it drives the display size too (issue #5). The configure gate asks whether the window owns the display — task `"0"`, or any app window while `persist.waydroid.multi_windows` is off; the IME helper (`"none"`) never does. Multi-window cards keep the fixed display. Matches upstream lineage-23.2 `window_owns_display_geometry()` (`ef6ae3f`) | ours |
-| 0019 | a failed EGL read-back of a wl_shm copy (the mouse pointer, layers the compositor cannot import, inactive-window snapshots) is logged with the failing step, the EGL/GL error and the buffer, rate-limited, instead of leaving the zeroed (transparent) memfd on screen without a word | ours |
-| 0020 | window creation never waits for the Wayland thread: the new window's role objects are made on the creation queue and dispatched by the composer thread that waits for their first configure (inside presentDisplay, holding the HWC2On1Adapter state mutex and windowsMutex), then handed to the default queue under a read intent. Before, the Wayland thread dispatched that configure while it could itself block on those locks (refresh nudge, input handlers): a lock cycle that wedged the display stack until the watchdog killed system_server | ours |
-| 0021 | preserve each parent's background opacity during xdg configure and display refit: multi-window app/IME parents stay transparent, so the compositor redraws the desktop and other windows behind them instead of leaving corrupt pixels outside the app | ours |
-| 0022 | decorated freeform apps get task-sized parents and local subsurface positions; keep native dimensions separate from Android buffer bounds, fit pending buffers uniformly and invert their viewport for input. Coalesce host resizes/maximize/tiling for 100 ms before resizing only the task; arriving Android frames cannot undo a native resize | ours |
-| 0023 | single-window SSD on stock HALs: debounce native sizes, call WindowManager through the Java helper, and present only its physical projection's content rect. Crop the client target's letterbox, retain physical input coordinates, and clear the logical override in multi-window mode. Capable HALs keep their physical reconnect path | ours |
-| 0024 | recompute freeform task bounds each frame so old maximized sizes, task positions and closed tasks cannot accumulate in later window geometry | ours |
-| 0025 | map decorated freeform parents only after the first task frame chooses their size; prevents a display-sized bootstrap configure from enlarging a task again after relayout recreates its window (reproduced with Google Play Store) | ours |
-| 0026 | retain recently resized freeform windows through temporary missing layers during Android relayout, preserving native window identity, position and focus. A one-second grace expires with an off-thread refresh so genuinely closed tasks are still removed | ours |
-| 0027 | associate untagged package/component child surfaces such as Chrome's web content with the package's unique task in the current frame, so multi-window presentation and task bounds include them. Ambiguous packages with multiple tasks remain unresolved | ours |
-| 0028 | present input-method overlays as subsurfaces of the host-focused app, without adding a decorated `InputMethod` window or changing the app's bounds. Before host focus, use only a unique visible app; retain standalone fallback when no owner is known. Detach obsolete subsurfaces on every frame when focus changes | ours |
+## Dependencies
 
-| 0029 | Play Store preview RGB565 buffers use the existing 32-bit EGL read-back; partial buffer cleanup skips missing Wayland buffers and failed mappings instead of crashing the composer | ours |
+`pins.env` fixes NDK r29, Android 13 AOSP/LineageOS headers, Waydroid minigbm,
+libffi, wayland, libxkbcommon, libdrm headers, wayland-protocols and image link
+stubs. `provision.sh` fetches them and verifies the download hashes. It supports
+individual stages (`ndk`, `clones`, `hidlgen`, `hidlout`, `staticdeps`, `protocols`,
+`imagelibs`). The NDK build requires no AOSP source tree.
 
-With native decorations enabled and `waydroid-ssd.jar` installed (see the
-[helper build/install instructions](ssd-overlay/README.md)), single-window mode
-also resizes Android's logical display to `floor(client size × output scale)`.
-The fixed physical mode on stock vendor images is intentional; `wm size` reports
-its matching **Override size**. There is no display hotplug on those images.
-WindowManager limits overrides to 200 pixels through twice the physical size per
-axis. `persist.waydroid.resize_settle_ms` controls debounce (default 250 ms).
-
-After building, `python3 hwcomposer/test_background_opacity.py build/hwcomposer-work/tree`
-checks both resize paths with transparent and opaque backgrounds using the patched C++ code
-and a host compiler. No Android runtime is needed; this does not replace a live compositor check.
-`python3 hwcomposer/test_task_geometry.py build/hwcomposer-work/tree` checks task
-bounds, native window dimensions, local layer placement, configure feedback and
-input-method routing between focused apps without enlarging their bounds.
-`python3 hwcomposer/test_child_surfaces.py build/hwcomposer-work/tree` checks
-child routing, ambiguous tasks, system-layer exclusions and per-frame reuse.
-`python3 hwcomposer/test_display_resize.py build/hwcomposer-work/tree` checks the
-logical projection, letterbox cropping, coordinate mapping and resize coalescing.
-
-Each patch header states what, why, source URL and author, licence and deviations. Not taken:
-quinovax's multi-window and input hunks (content-frame origins, `prepare_layer_geom` co-clipping,
-input clamping, solid parent buffer, subsurface neutralising, fake_touch/mouse_as_touch).
+The optional [SSD resource overlay](ssd-overlay/README.md) hides Android's caption
+when `persist.waydroid.window_decorations` is enabled. Single-window SSD on stock
+HALs uses a logical display override; the fixed physical mode is intentional.
 
 ## Licences
 
-android_hardware_waydroid is Apache-2.0; every patch here modifies it and is Apache-2.0
-(the baseline's and the quinovax fork's `patches/hwcomposer/` inherit Apache-2.0 per their
-LICENSE section 2; PR #20 was submitted to the baseline under the same terms). The build glue
-from the baseline is MIT. Statically linked into the binary: wayland (MIT), libffi (MIT),
-libxkbcommon (MIT/X11-style).
-
-`python3 hwcomposer/test_buffer_cleanup.py build/hwcomposer-work/tree` checks RGB565 read-back selection and cleanup after partial buffer creation, including failed mappings and borrowed PRIME buffers.
+Build glue adapted from the original waydroid-nvidia standalone build is MIT.
+Fork source files retain their copyright and licence notices; migrated commit
+messages retain the original patch attribution and licensing notes. Static guest
+dependencies include wayland (MIT), libffi (MIT), libxkbcommon (MIT/X11-style).
