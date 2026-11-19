@@ -77,6 +77,8 @@ the existing `persist.waydroid.window_decorations` SSD option is enabled.
 | 0027 | associate untagged package/component child surfaces such as Chrome's web content with the package's unique task in the current frame, so multi-window presentation and task bounds include them. Ambiguous packages with multiple tasks remain unresolved | ours |
 | 0028 | present input-method overlays as subsurfaces of the host-focused app, without adding a decorated `InputMethod` window or changing the app's bounds. Before host focus, use only a unique visible app; retain standalone fallback when no owner is known. Detach obsolete subsurfaces on every frame when focus changes | ours |
 
+| 0029 | Play Store preview RGB565 buffers use the existing 32-bit EGL read-back; partial buffer cleanup skips missing Wayland buffers and failed mappings instead of crashing the composer | ours |
+
 With native decorations enabled and `waydroid-ssd.jar` installed (see the
 [helper build/install instructions](ssd-overlay/README.md)), single-window mode
 also resizes Android's logical display to `floor(client size × output scale)`.
@@ -107,3 +109,5 @@ android_hardware_waydroid is Apache-2.0; every patch here modifies it and is Apa
 LICENSE section 2; PR #20 was submitted to the baseline under the same terms). The build glue
 from the baseline is MIT. Statically linked into the binary: wayland (MIT), libffi (MIT),
 libxkbcommon (MIT/X11-style).
+
+`python3 hwcomposer/test_buffer_cleanup.py build/hwcomposer-work/tree` checks RGB565 read-back selection and cleanup after partial buffer creation, including failed mappings and borrowed PRIME buffers.

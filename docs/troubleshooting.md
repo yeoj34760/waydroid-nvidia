@@ -36,6 +36,27 @@ python3 /usr/lib/waydroid-nvidia/native/dev/driver-mode status
 | Waydroid keeps using old images after an update | Waydroid prefers images in `/etc/waydroid-extra/images` or `/usr/share/waydroid-extra/images` | move those images away |
 | An app misbehaves only with `--native-gl on` | bug in our GL driver | report it; `--native-gl off` goes back to ANGLE |
 
+## Keep inactive app windows live
+
+Enable multi-window mode while the session is running, then restart the whole container:
+
+```sh
+waydroid prop set persist.waydroid.multi_windows true
+waydroid session stop
+sudo systemctl restart waydroid-container
+waydroid session start
+```
+
+The composer reads this property at startup. Setting it without restarting can leave Android
+and the composer using different window modes. In single-window mode, inactive app windows
+are replaced with still snapshots; multi-window mode presents each visible task's layers
+directly. An individual app can still pause its animation when it loses focus.
+
+After restarting, `waydroid prop get persist.waydroid.multi_windows` should print `true`.
+If composer logs still say `Making inactive window snapshot`, check that the full container
+was restarted and that the compositor provides `wl_subcompositor` (otherwise multi-window
+mode is disabled with a warning).
+
 ## Venus mode
 
 | What you see | What to do |

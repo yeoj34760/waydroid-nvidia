@@ -1,0 +1,41 @@
+From: waydroid-nvidia
+Subject: [PATCH] hwcomposer: handle RGB565 read-back and partial buffer cleanup
+
+Play Store detail previews produce RGB565 software-decoder buffers. The
+wl_shm fallback rejected format 4 and its partial buffer destructor called
+wl_buffer_destroy(nullptr), crashing the whole composer. EGL read-back
+already converts the source into 32-bit BGRA, so use XRGB8888 for RGB565.
+Only destroy resources that were actually acquired, including mmap failure.
+
+Source: waydroid-nvidia; reproduced 2026-11-18 on Play Store details
+License: MIT (upstream Waydroid hwcomposer files)
+
+diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
+index 2890ad6..20938bc 100644
+--- a/hwcomposer/gralloc_handler.cpp
++++ b/hwcomposer/gralloc_handler.cpp
+@@ -53,6 +53,8 @@ namespace {
+         uint32_t fmt;
+ 
+         switch (hal_format) {
++            // EGL read-back produces 32-bit BGRA even for a 16-bit source.
++            case HAL_PIXEL_FORMAT_RGB_565:
+             case HAL_PIXEL_FORMAT_RGBX_8888:
+                 fmt = WL_SHM_FORMAT_XRGB8888;
+                 break;
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index b035700..30a8f57 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -110,9 +110,9 @@ struct buffer;
+ buffer::~buffer() {
+     if (prime)
+         prime_release_source(prime_source);   /* wl_buffer belongs to the copy-target pool */
+-    else
++    else if (wl_buffer)
+         wl_buffer_destroy(wl_buffer);
+-    if (isShm)
++    if (isShm && shm_data && shm_data != MAP_FAILED)
+         munmap(shm_data, size);
+ }
+ 
