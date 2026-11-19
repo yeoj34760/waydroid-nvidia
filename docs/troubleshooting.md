@@ -57,6 +57,17 @@ If composer logs still say `Making inactive window snapshot`, check that the ful
 was restarted and that the compositor provides `wl_subcompositor` (otherwise multi-window
 mode is disabled with a warning).
 
+## Cursor disappears while dragging in games
+
+Some Unity games, including Blue Archive, send a transparent custom cursor when
+the mouse button is pressed. With `persist.waydroid.fake_touch` enabled, Android
+can also remove its pointer sprite during touch input. The pinned hwcomposer fork
+keeps the last visible cursor image during fake-touch drags and when a game sends
+a fully transparent sprite after clicking, even without subsequent mouse motion.
+This uses the default Wayland cursor path (`persist.waydroid.cursor_on_subsurface`
+unset or `false`); pointer capture can still hide the cursor. After installing an
+updated composer library, restart the entire container to load it.
+
 ## Venus mode
 
 | What you see | What to do |

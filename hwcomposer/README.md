@@ -22,8 +22,9 @@ sh build/hwcomposer-work/tree/tests/hwcomposer/run.sh
 
 The build extracts the pinned fork commit into `build/hwcomposer-work/tree`.
 `out/SOURCE` records the source URL and commit. The host tests cover background
-opacity, task geometry, child/IME routing, logical display resize, RGB565 read-back
-and cleanup after partial buffer creation. They do not replace a live compositor
+opacity, task geometry, child/IME routing, logical display resize, RGB565 read-back,
+cleanup after partial buffer creation, and cursor visibility/image preservation
+during touch drags and after clicks without mouse motion. They do not replace a live compositor
 check. CI runs the same build and tests.
 
 For local edits:
