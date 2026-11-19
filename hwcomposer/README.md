@@ -24,8 +24,9 @@ The build extracts the pinned fork commit into `build/hwcomposer-work/tree`.
 `out/SOURCE` records the source URL and commit. The host tests cover background
 opacity, task geometry, child/IME routing, logical display resize, RGB565 read-back,
 cleanup after partial buffer creation, and cursor visibility/image preservation
-during touch drags and after clicks without mouse motion. They do not replace a live compositor
-check. CI runs the same build and tests.
+during touch drags and after clicks without mouse motion, plus Ctrl+drag gesture
+coordinates, acceleration and contact cleanup. They do not replace a live
+compositor check. CI runs the same build and tests.
 
 For local edits:
 
@@ -43,6 +44,22 @@ The prolapse vendor-image build checks out the same fork commit for
 `hardware/waydroid`, then builds it with Soong. Stock reproduction and
 SurfaceFlinger builds retain their historical source manifest. Updating the fork
 pin invalidates the prolapse tree stamp.
+
+## Two-finger input
+
+Hold Ctrl and press the left mouse button to place a fixed first contact. Keep
+both held and drag at least 32 guest pixels to place the second contact. Further
+movement controls the second contact: moving away spreads the fingers, and
+moving toward the anchor pinches them together. Movement starts gently and
+accelerates with drag distance; reversing the drag follows the same curve.
+The initial response is one tenth of radial mouse movement. Ctrl+right-drag
+uses the reciprocal scale for the opposite zoom effect; its contact stays on
+the initial drag axis so crossing the anchor cannot flip it.
+
+Release the mouse button or Ctrl to end the gesture. Contacts stay inside the
+app content, and focus loss or pointer capture cancels them. The initial press
+is a real touch, so choose a suitable anchor in apps that select objects on
+touch-down. Apps determine how the two contacts affect their camera.
 
 ## Dependencies
 
